@@ -39,7 +39,7 @@ python3 -m pip install -U \
 
 # Install ROS 2 Humble
 sudo apt update && sudo apt install -y \
-    ros-rolling-ros-base 
+    ros-rolling-ros-base ros-rolling-rmw-cyclonedds-cpp 
 
 python3 -m pip install -U \
     transforms3d==0.4.2
