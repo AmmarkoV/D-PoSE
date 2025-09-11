@@ -9,7 +9,7 @@ services:
       #- /scratch/spare/nvasilik/data:/app/dpose/data
       - /tmp/.X11-unix:/tmp/.X11-unix
       - /dev/video0:/dev/video0
-      - /dev/video3:/dev/video3
+      - /dev/video1:/dev/video1
       #all network interfaces
       #- /dev:/dev
     shm_size: 400G
@@ -26,3 +26,5 @@ services:
     privileged: true
     environment:
       - DISPLAY=$DISPLAY 
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+      - ROS_DOMAIN_ID=55
