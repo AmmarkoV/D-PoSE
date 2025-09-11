@@ -305,10 +305,10 @@ class PoseEstimationNode(Node):
             joints = hmr_joints[i]
             
             # Apply camera translation to joints
-            joints[:, 0] += camera_translation[i, 0]
-            joints[:, 1] += camera_translation[i, 1]
-            joints[:, 2] += camera_translation[i, 2]
-            
+            joints[0, 0] += camera_translation[i, 0]
+            joints[0, 1] += camera_translation[i, 1]
+            joints[0, 2] += camera_translation[i, 2]
+
             # Convert joints to ROS message format
             for j, joint in enumerate(joints):
                 joint3d = Joint3D()
@@ -317,12 +317,14 @@ class PoseEstimationNode(Node):
                 joint3d.z = float(joint[2])
                 human.joints.append(joint3d)
                 
+
                 # Publish TF transform for the root joint (pelvis)
-                if j == 0:
-                    self._publish_joint_transform(
-                        current_time, human.id, j, joint3d
-                    )
-            
+                # if j == 0:
+                #     self._publish_joint_transform(
+                #         current_time, human.id, j, joint3d
+                #     )
+
+            self._publish_human_camera_transform(current_time, human.id, human)
             skeletons_msg.humans.append(human)
         
         # Publish the skeleton message
@@ -355,6 +357,57 @@ class PoseEstimationNode(Node):
         
         self.tf_broadcaster.sendTransform(t)
 
+    def _publish_human_camera_transform(self, timestamp, human_id, human):
+        """
+        Publish TF transform for a joint.
+        
+        Args:
+            timestamp: ROS timestamp
+            human_id: Human ID
+            joint_id: Joint ID
+            joint: Joint3D message
+        """
+        t = TransformStamped()
+        t.header.stamp = timestamp
+        t.header.frame_id = 'Camera'
+        # t.child_frame_id = f'human_{human_id}_joint_{joint_id}'
+        t.child_frame_id = f'human_{human_id}'
+        
+        t.transform.translation.x = human.joints[0].x
+        t.transform.translation.y = human.joints[0].y
+        t.transform.translation.z = human.joints[0].z
+        
+        pelvis = np.array([0.0,0.0,0.0])
+        left_hip = np.array([human.joints[1].x, human.joints[1].y, human.joints[1].z])
+        right_hip = np.array([human.joints[2].x, human.joints[2].y, human.joints[2].z])
+        neck = np.array([human.joints[12].x, human.joints[12].y, human.joints[12].z])
+
+        z_axis = neck-pelvis
+        z_axis /= np.linalg.norm(z_axis)
+
+        x_axis = right_hip - left_hip
+        x_axis /= np.linalg.norm(x_axis)
+
+        y_axis = np.cross(z_axis, x_axis)
+        y_axis /= np.linalg.norm(y_axis)
+
+        x_axis = np.cross(z_axis, y_axis)
+        x_axis /= np.linalg.norm(x_axis)
+
+        R = np.column_stack((x_axis, y_axis, z_axis))
+
+        q = tf_transformations.quaternion_from_matrix(
+            np.vstack((np.column_stack((R, [0,0,0])), [0,0,0,1])))
+
+        # Set orientation (assuming no rotation for joints)
+        t.transform.rotation.x = q[0]
+        t.transform.rotation.y = q[1]
+        t.transform.rotation.z = q[2]
+        t.transform.rotation.w = q[3]
+        
+        self.tf_broadcaster.sendTransform(t)
+
+    # TODO: Move this to the robot side (so no fixed envirnoment components are present here)
     def publish_aruco_transforms(self, timestamp):
         """
         Publish ArUco marker transforms.
@@ -365,17 +418,17 @@ class PoseEstimationNode(Node):
         # Publish base ArUco transform
         t = TransformStamped()
         t.header.stamp = timestamp
-        t.header.frame_id = 'base_link'
+        t.header.frame_id = 'wood_panel'
         t.child_frame_id = 'Aruco_marker'
         
-        t.transform.translation.x = 0.0
-        t.transform.translation.y = -0.15
-        t.transform.translation.z = -0.2
+        t.transform.translation.x = 0.1055
+        t.transform.translation.y = 1.405
+        t.transform.translation.z = -0.1025
         
-        t.transform.rotation.x = 0.7071068
-        t.transform.rotation.y = 0.0
-        t.transform.rotation.z = 0.0
-        t.transform.rotation.w = 0.7071068
+        t.transform.rotation.x = 0.0
+        t.transform.rotation.y = -0.7071068
+        t.transform.rotation.z = -0.7071068
+        t.transform.rotation.w = 0.0
         
         self.tf_broadcaster.sendTransform(t)
         
@@ -394,7 +447,7 @@ class PoseEstimationNode(Node):
             tvec = self.first_tvec.reshape(3)
             t_inv = -np.dot(R_inv, tvec)
             
-            t.transform.translation.x = float(-t_inv[0])
+            t.transform.translation.x = float(t_inv[0])
             t.transform.translation.y = float(t_inv[1])
             t.transform.translation.z = float(t_inv[2])
             
