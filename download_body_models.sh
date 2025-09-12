@@ -26,3 +26,6 @@ unzip data/body_models/smpl.zip -d data/body_models/
 mv data/body_models/SMPL_python_v.1.1.0/smpl/models/basicmodel_f_lbs_10_207_0_v1.1.0.pkl data/body_models/SMPL_python_v.1.1.0/smpl/models/SMPL_FEMALE.pkl
 mv data/body_models/SMPL_python_v.1.1.0/smpl/models/basicmodel_m_lbs_10_207_0_v1.1.0.pkl data/body_models/SMPL_python_v.1.1.0/smpl/models/SMPL_MALE.pkl
 mv data/body_models/SMPL_python_v.1.1.0/smpl/models/basicmodel_neutral_lbs_10_207_0_v1.1.0.pkl data/body_models/SMPL_python_v.1.1.0/smpl/models/SMPL_NEUTRAL.pkl
+
+mkdir data/utils
+wget https://github.com/yufu-wang/ReFit/raw/3167cbfe6e3ad4cc9ffb4a407364aa4254137ba4/data/smpl/smpl_mean_params.npz -O data/utils/smpl_mean_params.npz --continue --no-check-certificate

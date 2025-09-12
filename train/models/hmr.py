@@ -27,7 +27,7 @@ class HMR(nn.Module):
             pretrained_ckpt = backbone + '-' + pretrained_ckpt
             pretrained_ckpt_path = PRETRAINED_CKPT_FOLDER[pretrained_ckpt]
             self.backbone = eval(backbone)(
-                #pretrained_ckpt_path=pretrained_ckpt_path,
+                pretrained_ckpt_path=pretrained_ckpt_path,
                 downsample=True,
                 use_conv=(use_conv == 'conv'),
             )
