@@ -18,6 +18,8 @@ Before running the script, ensure you have:
    - `https://smpl-x.is.tue.mpg.de/`
 7. **Download SMPL and SMPLX models using the provided script**:
    - `./download_body_models.sh`
+8. **Download the HRNet checkpoint pretrained**:
+   - HRNet checkpoint pretrained on COCO images from [here](https://drive.google.com/file/d/15T2XqPjW7Ex0uyC1miGVYUv7ULOxIyJI/view?usp=share_link) and put it       in data/ckpt/pretrained.
 
 ### Build Image and run a container
 ```bash
