@@ -530,8 +530,8 @@ class PoseHighResolutionNet(nn.Module):
 def get_pose_net(cfg, is_train):
     model = PoseHighResolutionNet(cfg)
 
-    if is_train and cfg['MODEL']['INIT_WEIGHTS']:
-        model.init_weights(cfg['MODEL']['PRETRAINED'])
+    #if is_train and cfg['MODEL']['INIT_WEIGHTS']:
+    #    model.init_weights(cfg['MODEL']['PRETRAINED'])
 
     return model
 
