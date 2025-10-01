@@ -79,7 +79,7 @@ def main(args):
                 output_format='dict',
                 yolo_img_size=416
             )
-            cap = cv2.VideoCapture(2)
+            cap = cv2.VideoCapture(0)
             cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
             cap.set(cv2.CAP_PROP_FPS,13)
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
@@ -113,6 +113,7 @@ def main(args):
                         dets = torch.cat([filtered_boxes, filtered_scores], dim=1).cpu().detach().numpy()
                     else:
                         dets = np.empty((0, 5))
+                        #print("No detection")
 
                     detections = [dets]
                     detection = mot.prepare_output_detections(detections)

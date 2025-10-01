@@ -19,10 +19,6 @@ from ..models.head.smplx_cam_head import SMPLXCamHead
 from ..utils.renderer_pyrd import Renderer
 from ..utils.image_utils import crop
 
-
-
-
-
 class Tester:
     def __init__(self, args):
 
@@ -51,7 +47,7 @@ class Tester:
     def _load_pretrained_model(self):
         # ========= Load pretrained weights ========= #
         logger.info(f'Loading pretrained model from {self.args.ckpt}')
-        ckpt = torch.load(self.args.ckpt)['state_dict']
+        ckpt = torch.load(self.args.ckpt,weights_only=False)['state_dict']
         load_pretrained_model(self.model, ckpt, overwrite_shape_mismatch=True, remove_lightning=True)
         logger.info(f'Loaded pretrained weights from \"{self.args.ckpt}\"')
 
@@ -119,7 +115,6 @@ class Tester:
                 img_w = torch.tensor(orig_width).repeat(batch_size).cuda().float()
                 focal_length = ((img_w * img_w + img_h * img_h) ** 0.5).cuda().float()
                 if not self.hparams.DATASET.USE_DEPTH:
-
                     hmr_output = self.model(inp_images, bbox_center=bbox_center, bbox_scale=bbox_scale, img_w=img_w, img_h=img_h)
                 else:
                     hmr_output,orig_depth,_,_,segmentation = self.model(inp_images, bbox_center=bbox_center, bbox_scale=bbox_scale, img_w=img_w, img_h=img_h)
@@ -157,7 +152,6 @@ class Tester:
     def _run_on_single_image_tensor(self, image_tensor,detections):
         dets = detections
 
-
         img = image_tensor#.transpose(1,0,2)
         orig_height, orig_width = img.shape[:2]
         if len(dets[0])>0:
@@ -167,21 +161,23 @@ class Tester:
 
         batch_size = inp_images.shape[0]
        # import ipdb; ipdb.set_trace()
-        bbox_scale = []
+        bbox_scale  = []
         bbox_center = []
+        #print(len(dets)," detections")
+ 
         for det_idx, det in enumerate(dets):
             #import ipdb; ipdb.set_trace()
             bbox = det#[0]
             bbox_scale.append(bbox[2] / 200.)
             bbox_center.append([bbox[0], bbox[1]])
-            rgb_img = crop(img, bbox_center[-1], bbox_scale[-1],[self.model_cfg.DATASET.IMG_RES, self.model_cfg.DATASET.IMG_RES])
-            rgb_img = np.transpose(rgb_img.astype('float32'), (2, 0, 1)) / 255.0
-            rgb_img = torch.from_numpy(rgb_img)
+            rgb_img  = crop(img, bbox_center[-1], bbox_scale[-1],[self.model_cfg.DATASET.IMG_RES, self.model_cfg.DATASET.IMG_RES])
+            rgb_img  = np.transpose(rgb_img.astype('float32'), (2, 0, 1)) / 255.0
+            rgb_img  = torch.from_numpy(rgb_img)
             norm_img = self.normalize_img(rgb_img)
             inp_images[det_idx] = norm_img.float().to(self.device)
 
         bbox_center = torch.tensor(bbox_center).cuda().float()
-        bbox_scale = torch.tensor(bbox_scale).cuda().float()
+        bbox_scale  = torch.tensor(bbox_scale).cuda().float()
         img_h = torch.tensor(orig_height).repeat(batch_size).cuda().float()
         img_w = torch.tensor(orig_width).repeat(batch_size).cuda().float()
         focal_length = ((img_w * img_w + img_h * img_h) ** 0.5).cuda().float()
@@ -220,7 +216,7 @@ class Tester:
         #renderer.delete()
         
     @torch.no_grad()
-    def run_on_single_image_tensor(self, image_tensor, detections,render=False):
+    def run_on_single_image_tensor(self, image_tensor, detections,render=True):
         dets = detections
 
         # Load the image tensor and get its dimensions
@@ -296,6 +292,8 @@ class Tester:
         return hmr_output
         #side_view = self.renderer.render_side_view(pred_vertices_array)
         #cv2.imshow('side', side_view[:, :, ::-1])
+
+
     @torch.no_grad()
     def run_on_hbw_folder(self, all_image_folder, detections, output_folder, data_split='test', visualize_proj=True):
         img_names = []
