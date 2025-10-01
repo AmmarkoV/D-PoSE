@@ -1,35 +1,6 @@
 # D-PoSE ROS2 Webcam Demo - Usage Instructions
 
-This cleaned version of `ros_demo_webcam.py` provides an easy-to-use interface for real-time 3D human pose estimation using a webcam.
 
-## Requirements
-
-Before running the script, ensure you have:
-
-1. **Docker** installed and properly configured
-2. **NVIDIA Container Toolkit** installed
-   - `CUDA GPU required`
-4. **Webcam** connected to your system
-5. **D-PoSE model files**:
-   - `data/ckpt/paper_arxiv.ckpt`
-   -  [Google Drive link ](https://drive.google.com/file/d/1j1ruKg4Wvul8eGMM3KjDkrcjWTFXk6yN/view?usp=sharing)
-6. **Register for SMPL and SMPLX body models (READ LICENSE)**:
-   - `https://smpl.is.tue.mpg.de/`
-   - `https://smpl-x.is.tue.mpg.de/`
-7. **Download SMPL and SMPLX models using the provided script**:
-   - `./download_body_models.sh`
-8. **Download the HRNet checkpoint pretrained**:
-   - HRNet checkpoint pretrained on COCO images from [here](https://drive.google.com/file/d/15T2XqPjW7Ex0uyC1miGVYUv7ULOxIyJI/view?usp=share_link) and put it       in data/ckpt/pretrained.
-
-### Build Image and run a container
-```bash
-./run_dpose.sh
-```
-
-### Simple Usage (with defaults)
-```bash
-python3 ros_demo_webcam.py
-```
 
 ### Common Usage Examples
 
