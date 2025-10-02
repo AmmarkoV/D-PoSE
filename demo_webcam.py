@@ -53,7 +53,7 @@ def getCaptureDeviceFromPath(videoFilePath,videoWidth,videoHeight,videoFramerate
      cap = ESP32CamStreamer()
   if (videoFilePath=="screen"):
      from screenStream import ScreenGrabber
-     cap =  ScreenGrabber(region=(0,0,800,600))
+     cap =  ScreenGrabber(region=(0,0,videoWidth,videoHeight))
   elif (videoFilePath=="webcam"):
      cap = cv2.VideoCapture(0)
      cap.set(cv2.CAP_PROP_FPS,videoFramerate)
@@ -126,7 +126,7 @@ def main(args):
             #cap.set(cv2.CAP_PROP_FRAME_WIDTH, videoWidth)
             #cap.set(cv2.CAP_PROP_FRAME_HEIGHT, videoHeight)
 
-            cap = getCaptureDeviceFromPath(args.from,videoWidth,videoHeight,videoFramerate)
+            cap = getCaptureDeviceFromPath(args.input,videoWidth,videoHeight,videoFramerate)
 
             frameNumber = 0
             use_bbox_filter = False
@@ -266,7 +266,7 @@ def main(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
 
-    parser.add_argument('--from', type=str, default='/dev/video0',
+    parser.add_argument('--input', type=str, default='/dev/video0',
                         help='From Device (path to files, videos , /dev/videoX or screen )')
 
     parser.add_argument('--cfg', type=str, default='configs/dpose_conf.yaml',
