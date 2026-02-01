@@ -4,6 +4,7 @@ import argparse
 import torch
 import numpy as np
 import cv2
+import csv
 from loguru import logger
 from glob import glob
 from train.core.tester import Tester
@@ -118,9 +119,9 @@ def save_matlab_visualization(hmr_output,output_filename="skeleton.png"):
 """
 This only encodes the body 3D points
 """ 
-def encode_smpl_skeleton_to_dict(hmr_output): 
+def encode_smpl_skeleton_to_dict(hmr_output, person_idx=0): 
     # Extract the first sample in the batch and take the first 22 SMPL joints
-    joints_3d = hmr_output['joints3d'][0, :22, :]
+    joints_3d = hmr_output['joints3d'][person_idx, :22, :]
 
     # Convert to numpy if needed
     if isinstance(joints_3d, torch.Tensor):
@@ -140,9 +141,9 @@ def encode_smpl_skeleton_to_dict(hmr_output):
 """
 This encodes both body AND hand AND face 3D points
 """ 
-def encode_smplx_skeleton_to_dict(hmr_output): 
+def encode_smplx_skeleton_to_dict(hmr_output, person_idx=0): 
     # --- Extract body joints ---
-    joints_body = hmr_output['joints3d'][0]  # shape (22, 3)
+    joints_body = hmr_output['joints3d'][person_idx]  # shape (22, 3)
 
     if isinstance(joints_body, torch.Tensor):
         joints_body = joints_body.cpu().numpy()
@@ -172,7 +173,7 @@ def encode_smplx_skeleton_to_dict(hmr_output):
     for side in ['left', 'right']:
         hand_key_3d = f"{side}_hand_3d"
         if hand_key_3d in hmr_output:
-            hand_joints = hmr_output[hand_key_3d][0]  # shape (15, 3) or 21?
+            hand_joints = hmr_output[hand_key_3d][person_idx]  # shape (15, 3) or 21?
             if isinstance(hand_joints, torch.Tensor):
                 hand_joints = hand_joints.cpu().numpy()
             
@@ -188,7 +189,7 @@ def encode_smplx_skeleton_to_dict(hmr_output):
     ]
     # If more joints are available, just number them
     if 'head_3d' in hmr_output:
-        head_joints = hmr_output['head_3d'][0]
+        head_joints = hmr_output['head_3d'][person_idx]
         if isinstance(head_joints, torch.Tensor):
             head_joints = head_joints.cpu().numpy()
         
@@ -298,13 +299,65 @@ def rotate_frame_90(frame, clockwise=True):
     else:
         # 90° counter-clockwise
         return cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+# --------------------------------------------------
+# CSV export for 3D skeletons (one row per skeleton)
+# Columns: frame_id, skeleton_id, <joint>_x, <joint>_y, <joint>_z
+# --------------------------------------------------
+def _skeleton_dict_to_csv_row(skeleton_dict, frame_id, skeleton_id):
+    row = {
+        "frame_id": int(frame_id),
+        "skeleton_id": int(skeleton_id),
+    }
+    if not isinstance(skeleton_dict, dict):
+        return row
+
+    for joint_name, coords in skeleton_dict.items():
+        if coords is None:
+            continue
+        # coords is expected to be [x,y,z] (list/tuple/np)
+        try:
+            x, y, z = coords[:3]
+        except Exception:
+            continue
+        row[f"{joint_name}_x"] = float(x)
+        row[f"{joint_name}_y"] = float(y)
+        row[f"{joint_name}_z"] = float(z)
+    return row
+
+
+def write_skeleton_rows_to_csv(rows, csv_path):
+    if rows is None:
+        rows = []
+
+    # Ensure output directory exists
+    directoryPath = os.path.dirname(csv_path)
+    if directoryPath != "":
+        os.makedirs(directoryPath, exist_ok=True)
+
+    # Build header = fixed cols + all joint coord cols (sorted for stability)
+    all_keys = set()
+    for r in rows:
+        all_keys.update(r.keys())
+
+    fixed = ["frame_id", "skeleton_id"]
+    other = sorted(k for k in all_keys if k not in fixed)
+    fieldnames = fixed + other
+
+    with open(csv_path, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+        w.writeheader()
+        for r in rows:
+            w.writerow(r)
+
+    print(f"[INFO] Skeleton CSV saved to {csv_path}")
+
 
 
 def main(args):
 
     input_image_folder = args.image_folder
     output_path        = args.output_folder
-    #os.makedirs(output_path, exist_ok=True)
+    os.makedirs(output_path, exist_ok=True)
 
     logger.add(
         os.path.join(output_path, 'demo.log'),
@@ -321,6 +374,7 @@ def main(args):
 
     tester  = Tester(args)
     history = list()
+    skeleton_rows = []  # accumulated CSV rows (one per skeleton per frame)
 
     if True:
         all_image_folder = [input_image_folder]
@@ -391,16 +445,41 @@ def main(args):
                         #At this point hmr_output has the resolved pose data..!
                         #---------------------------------------------------------------------------------------
                         
-                        #pose3DAsDictionary = encode_smpl_skeleton_to_dict(hmr_output)
-                        pose3DAsDictionary = encode_smplx_skeleton_to_dict(hmr_output)
+                        
+                        #---------------------------------------------------------------------------------------
+                        # At this point hmr_output has the resolved pose data for (potentially) multiple people.
+                        # We export ONE CSV row per skeleton, and include both frame_id and skeleton_id.
+                        #---------------------------------------------------------------------------------------
 
-                        history.append(pose3DAsDictionary)
- 
-                        #We can dump the skeleton to disk as skeleton_00000.json etc.
+                        # Determine how many skeletons are present in this frame
+                        num_skeletons = 1
+                        try:
+                            num_skeletons = int(hmr_output['joints3d'].shape[0])
+                        except Exception:
+                            num_skeletons = 1
+
+                        frame_rows = []
+
+                        for skeleton_id in range(num_skeletons):
+                            #pose3DAsDictionary = encode_smpl_skeleton_to_dict(hmr_output, person_idx=skeleton_id)
+                            pose3DAsDictionary = encode_smplx_skeleton_to_dict(hmr_output, person_idx=skeleton_id)
+
+                            # Keep the original history behavior (first skeleton only) for compatibility
+                            if skeleton_id == 0:
+                                history.append(pose3DAsDictionary)
+
+                            row = _skeleton_dict_to_csv_row(pose3DAsDictionary, frame_id=frameNumber, skeleton_id=skeleton_id)
+                            skeleton_rows.append(row)
+                            frame_rows.append(row)
+
+                        # Per-frame dump (replaces skeleton_XXXXX.json)
                         if (args.save):
-                           save_skeleton_dict_to_json(pose3DAsDictionary,output_filename="skeleton_%05u.json" % frameNumber)
-                           del hmr_output['vertices'] # <- Remove this because it is really big
-                           save_raw_dict_to_json(hmr_output,output_filename="raw_%05u.json" % frameNumber)
+                            write_skeleton_rows_to_csv(frame_rows, csv_path="skeleton_%05u.csv" % frameNumber)
+
+                            # Keep raw dump in JSON (very large, but useful for debugging)
+                            if 'vertices' in hmr_output:
+                                del hmr_output['vertices']  # <- Remove this because it is really big
+                            save_raw_dict_to_json(hmr_output, output_filename="raw_%05u.json" % frameNumber)
 
                         #Uncomment to also do a matlab visualization
                         #save_matlab_visualization(hmr_output,output_filename="skeleton_%05u.png" % frameNumber)
@@ -414,14 +493,19 @@ def main(args):
 
                     if cv2.waitKey(1) & 0xFF == ord('q'):
                         break
+    # Write a single CSV that contains ALL skeletons across ALL frames.
+    # One row per (frame_id, skeleton_id).
 
-    saveCSVFileFromListOfDictsFollowingSkeletonOrder("3DPointsAzureKinect.csv",history,get_azure_kinect_skeleton())
-  
-    input_path = args.input_path
-    csv_path = input_path + "_3DBody.csv"
-    saveCSVFileFromListOfDicts(csv_path,history)
+    input_path = args.input
+    csv_path   = input_path + "_3DBody.csv"
+    video_path = input_path + "_3DBody.mp4" 
+    write_skeleton_rows_to_csv(skeleton_rows, csv_path)
+
+    # (Optional) keep the legacy CSV exports (single skeleton per frame, no IDs)
+    saveCSVFileFromListOfDictsFollowingSkeletonOrder(os.path.join(output_path, "3DPointsAzureKinect_legacy.csv"), history, get_azure_kinect_skeleton())
+    saveCSVFileFromListOfDicts(os.path.join(output_path, "3DPoints_legacy.csv"), history)
     if (args.save):
-        os.system("ffmpeg -nostdin -framerate %u -start_number 1 -i colorFrame_0_%%05d.jpg -s %ux%u  -y -r %u -pix_fmt yuv420p -threads 8 livelastRun3DHiRes.mp4 && rm colorFrame_0_*.jpg " % (videoFramerate,videoWidth,videoHeight,videoFramerate)) # 
+        os.system("ffmpeg -nostdin -framerate %u -start_number 1 -i colorFrame_0_%%05d.jpg -s %ux%u  -y -r %u -pix_fmt yuv420p -threads 8 %s && rm colorFrame_0_*.jpg " % (videoFramerate,videoWidth,videoHeight,videoFramerate,video_path)) # 
     del tester.model
 
     logger.info('================= END =================')
