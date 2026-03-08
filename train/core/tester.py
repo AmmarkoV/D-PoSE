@@ -1,5 +1,6 @@
 
 import os
+import sys
 import cv2
 import torch
 import tqdm
@@ -19,6 +20,61 @@ from ..models.head.smplx_cam_head import SMPLXCamHead
 from ..utils.renderer_pyrd import Renderer
 from ..utils.image_utils import crop
 
+
+
+sys.path.insert(0, "/home/ammar/Documents/3dParty/MHR")
+sys.path.insert(0, "/home/ammar/Documents/3dParty/MHR/tools/mhr_smpl_conversion")
+#MHR_ROOT = "/home/ammar/Documents/3dParty/MHR/tools/mhr_smpl_conversion"
+#sys.path.append(MHR_ROOT)
+
+from conversion import Conversion
+from mhr.mhr import MHR
+
+
+
+def load_mhr_faces():
+    from pathlib import Path
+    import trimesh
+    candidates = [
+        Path("/home/ammar/Documents/3dParty/D-PoSE/assets/lod1.fbx"),
+        Path(__file__).resolve().parents[2] / "assets" / "lod1.fbx",
+        Path.cwd() / "assets" / "lod1.fbx",
+    ]
+
+    errors = []
+
+    for path in candidates:
+        try:
+            if not path.is_file():
+                errors.append(f"{path} -> not found")
+                continue
+
+            obj = trimesh.load(str(path), file_type="fbx", force="scene")
+
+            # FBX often loads as a Scene, not a Mesh
+            if isinstance(obj, trimesh.Scene):
+                for name, geom in obj.geometry.items():
+                    if hasattr(geom, "faces") and geom.faces is not None and len(geom.faces) > 0:
+                        faces = np.asarray(geom.faces, dtype=np.int64)
+                        print(f"Loaded MHR faces from {path} geometry={name} faces={faces.shape}", flush=True)
+                        return faces
+                errors.append(f"{path} -> scene loaded but no geometry with faces")
+                continue
+
+            if hasattr(obj, "faces") and obj.faces is not None and len(obj.faces) > 0:
+                faces = np.asarray(obj.faces, dtype=np.int64)
+                print(f"Loaded MHR faces from {path} faces={faces.shape}", flush=True)
+                return faces
+
+            errors.append(f"{path} -> loaded object has no faces")
+
+        except Exception as e:
+            errors.append(f"{path} -> {repr(e)}")
+
+    raise RuntimeError("Could not load MHR faces:\n" + "\n".join(errors))
+
+
+
 class Tester:
     def __init__(self, args):
 
@@ -32,7 +88,78 @@ class Tester:
         self.smplx_cam_head = SMPLXCamHead(img_res=self.model_cfg.DATASET.IMG_RES).to(self.device)
         self._load_pretrained_model()
         self.model.eval()
-        self.renderer = Renderer(focal_length=1468.6047, img_w=1280, img_h=720, faces=self.smplx_cam_head.smplx.faces, same_mesh_color=False)
+        #self.renderer = Renderer(focal_length=1468.6047, img_w=1280, img_h=720, faces=self.smplx_cam_head.smplx.faces, same_mesh_color=False)
+
+        print("A: pretrained model loaded", flush=True)
+
+        print("B: before MHR.from_files", flush=True)
+        #self.mhr_model = MHR.from_files(lod=1, device=torch.device("cpu"))
+        self.mhr_model = torch.load("mhr_model.pt", map_location="cpu",weights_only=False)
+        print("C: after MHR.from_files", flush=True)
+
+        print("D: before Conversion", flush=True)
+        self.converter = Conversion(mhr_model=self.mhr_model, smpl_model=self.smplx_cam_head.smplx, method="pytorch", batch_size=32, )
+        print("E: after Conversion", flush=True)
+
+        print("F: before Renderer", flush=True)
+        #mhr_faces = self.mhr_model.character.mesh.faces
+        mhr_faces = load_mhr_faces()
+        self.renderer = Renderer(focal_length=1468.6047, img_w=1280, img_h=720, faces=mhr_faces, same_mesh_color=False, )
+        print("G: after Renderer", flush=True)
+
+    def _convert_smplx_output_to_mhr(self, hmr_output, single_identity=False, is_tracking=False):
+        """
+        Convert HMR/SMPL-X output to MHR parameters and MHR vertices.
+        Returns a dictionary with MHR-only data.
+        """
+        # SMPL-X vertices in camera space
+        smplx_vertices_cam = hmr_output["vertices"] + hmr_output["pred_cam_t"].unsqueeze(1)
+
+        conversion_results = self.converter.convert_smpl2mhr(
+        smpl_vertices=smplx_vertices_cam,
+        smpl_parameters=None,
+        single_identity=single_identity,
+        exclude_expression=False,
+        is_tracking=is_tracking,
+        return_mhr_meshes=False,
+        return_mhr_parameters=True,
+        return_mhr_vertices=True,
+        return_fitting_errors=True,
+    )
+
+        mhr_vertices_cm = conversion_results.result_vertices
+        mhr_params = conversion_results.result_parameters
+        mhr_errors = conversion_results.result_errors
+
+        # MHR package uses centimeters
+        if isinstance(mhr_vertices_cm, torch.Tensor):
+            mhr_vertices_m = mhr_vertices_cm / 100.0
+        else:
+            mhr_vertices_m = mhr_vertices_cm / 100.0
+
+        # Optional: reconstruct through the real MHR forward model for consistency
+        identity_coeffs = mhr_params["identity_coeffs"]
+        model_parameters = mhr_params["lbs_model_params"]
+        face_expr_coeffs = mhr_params["face_expr_coeffs"]
+
+        with torch.no_grad():
+            mhr_forward_verts_cm, mhr_skel_state = self.mhr_model(
+            identity_coeffs=identity_coeffs,
+            model_parameters=model_parameters,
+            face_expr_coeffs=face_expr_coeffs,
+        )
+
+        mhr_forward_verts_m = mhr_forward_verts_cm / 100.0
+
+        return {
+        "mhr_vertices_cm": mhr_vertices_cm,
+        "mhr_vertices_m": mhr_vertices_m,
+        "mhr_forward_vertices_cm": mhr_forward_verts_cm,
+        "mhr_forward_vertices_m": mhr_forward_verts_m,
+        "mhr_parameters": mhr_params,
+        "mhr_skel_state": mhr_skel_state,
+        "mhr_errors": mhr_errors,
+       }
 
     def _build_model(self):
         self.hparams = self.model_cfg
@@ -148,6 +275,8 @@ class Tester:
                 #import ipdb; ipdb.set_trace()
                 '''
                 #renderer.delete()
+
+    """
     @torch.no_grad()
     def _run_on_single_image_tensor(self, image_tensor,detections):
         dets = detections
@@ -296,7 +425,85 @@ class Tester:
         return hmr_output
         #side_view = self.renderer.render_side_view(pred_vertices_array)
         #cv2.imshow('side', side_view[:, :, ::-1])
+    """
+    @torch.no_grad()
+    def run_on_single_image_tensor(self, image_tensor, detections, render=True, save=None):
+        dets = detections
+        img = image_tensor
+        orig_height, orig_width = img.shape[:2]
 
+        if len(dets[0]) > 0:
+            dets = dets[0]
+        else:
+            if render:
+                cv2.imshow('front', img[:, :, ::-1])
+                if save is not None:
+                    cv2.imwrite(save, img[:, :, ::-1])
+            return None
+
+        batch_size = len(dets)
+
+        bbox_scale = torch.tensor([det[2] / 200.0 for det in dets], device=self.device)
+        bbox_center = torch.tensor([[det[0], det[1]] for det in dets], device=self.device)
+
+        img_h = torch.tensor([orig_height] * batch_size, device=self.device, dtype=torch.float)
+        img_w = torch.tensor([orig_width] * batch_size, device=self.device, dtype=torch.float)
+
+        bbox_centers_np = bbox_center.cpu().numpy()
+        bbox_scales_np = bbox_scale.cpu().numpy()
+
+        cropped_imgs = [
+            np.transpose(
+                crop(
+                    img,
+                    bbox_centers_np[i],
+                    bbox_scales_np[i],
+                    [self.model_cfg.DATASET.IMG_RES, self.model_cfg.DATASET.IMG_RES]
+                ).astype('float32'),    
+                (2, 0, 1)
+            ) / 255.0
+            for i in range(len(dets))
+        ]
+
+        inp_images = torch.from_numpy(np.stack(cropped_imgs)).to(self.device)
+        inp_images = self.normalize_img(inp_images)
+
+        # Existing HMR / SMPL-X inference
+        hmr_output, orig_depth, _, _, segmentation = self.model(
+            inp_images,
+            bbox_center=bbox_center,
+            bbox_scale=bbox_scale,
+            img_w=img_w,
+            img_h=img_h
+        )
+
+        # Intercept here: SMPL-X -> MHR
+        mhr_output = self._convert_smplx_output_to_mhr(
+            hmr_output,
+            single_identity=False,
+            is_tracking=True,
+        )
+
+        # Render only MHR
+        if render:
+            mhr_vertices_for_render = mhr_output["mhr_forward_vertices_m"]
+            if isinstance(mhr_vertices_for_render, torch.Tensor):
+                mhr_vertices_for_render = mhr_vertices_for_render.detach().cpu().numpy()
+    
+            front_view = self.renderer.render_front_view(
+                mhr_vertices_for_render,
+                bg_img_rgb=img.copy()
+            )
+            cv2.imshow('front', front_view[:, :, ::-1])
+
+            if save is not None:
+                cv2.imwrite(save, front_view[:, :, ::-1])
+        else:
+            cv2.imshow('front', img[:, :, ::-1])
+            if save is not None:
+                cv2.imwrite(save, img[:, :, ::-1])
+
+        return mhr_output
 
     @torch.no_grad()
     def run_on_hbw_folder(self, all_image_folder, detections, output_folder, data_split='test', visualize_proj=True):

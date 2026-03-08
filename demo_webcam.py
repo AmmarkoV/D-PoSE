@@ -300,6 +300,26 @@ def rotate_frame_90(frame, clockwise=True):
         return cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
 
 
+def encode_mhr_output_to_dict(mhr_output):
+    result = {}
+
+    if mhr_output is None:
+        return result
+
+    if "mhr_parameters" in mhr_output and mhr_output["mhr_parameters"] is not None:
+        params = mhr_output["mhr_parameters"]
+        result["identity_coeffs"] = to_json_serializable(params.get("identity_coeffs"))
+        result["lbs_model_params"] = to_json_serializable(params.get("lbs_model_params"))
+        result["face_expr_coeffs"] = to_json_serializable(params.get("face_expr_coeffs"))
+
+    if "mhr_skel_state" in mhr_output and mhr_output["mhr_skel_state"] is not None:
+        result["mhr_skel_state"] = to_json_serializable(mhr_output["mhr_skel_state"])
+
+    if "mhr_errors" in mhr_output and mhr_output["mhr_errors"] is not None:
+        result["mhr_errors"] = to_json_serializable(mhr_output["mhr_errors"])
+
+    return result
+
 def main(args):
 
     input_image_folder = args.image_folder
@@ -353,7 +373,7 @@ def main(args):
                       break
   
                     #frame = rotate_frame_90(frame)
-                    #frame, scale, pad_x, pad_y = scale_and_embed_frame(frame)
+                    frame, scale, pad_x, pad_y = scale_and_embed_frame(frame)
 
                     input_tensor = torch.tensor(frame).permute(2, 0, 1).unsqueeze(0) / 255.0
                     detection    = mot.detector(input_tensor.cuda())
@@ -386,21 +406,37 @@ def main(args):
                         if (args.save):
                            saveFilename = 'colorFrame_0_%05d.jpg' % frameNumber
 
-                        hmr_output=tester.run_on_single_image_tensor(frame, detection, save=saveFilename)
+                        #hmr_output=tester.run_on_single_image_tensor(frame, detection, save=saveFilename)
                         #---------------------------------------------------------------------------------------
                         #At this point hmr_output has the resolved pose data..!
                         #---------------------------------------------------------------------------------------
-                        
-                        #pose3DAsDictionary = encode_smpl_skeleton_to_dict(hmr_output)
-                        pose3DAsDictionary = encode_smplx_skeleton_to_dict(hmr_output)
+                         
+                        #pose3DAsDictionary = encode_smplx_skeleton_to_dict(hmr_output)
 
-                        history.append(pose3DAsDictionary)
+                        #history.append(pose3DAsDictionary)
  
                         #We can dump the skeleton to disk as skeleton_00000.json etc.
-                        if (args.save):
-                           save_skeleton_dict_to_json(pose3DAsDictionary,output_filename="skeleton_%05u.json" % frameNumber)
-                           del hmr_output['vertices'] # <- Remove this because it is really big
-                           save_raw_dict_to_json(hmr_output,output_filename="raw_%05u.json" % frameNumber)
+                        #if (args.save):
+                        #   save_skeleton_dict_to_json(pose3DAsDictionary,output_filename="skeleton_%05u.json" % frameNumber)
+                        #   del hmr_output['vertices'] # <- Remove this because it is really big
+                        #  save_raw_dict_to_json(hmr_output,output_filename="raw_%05u.json" % frameNumber)
+
+                        mhr_output = tester.run_on_single_image_tensor(frame, detection, save=saveFilename)
+
+                        pose3DAsDictionary = encode_mhr_output_to_dict(mhr_output)
+                        history.append(pose3DAsDictionary)
+
+                        if args.save:
+                            save_skeleton_dict_to_json(
+                                pose3DAsDictionary,
+                                output_filename="mhr_%05u.json" % frameNumber
+                            )
+
+                            save_raw_dict_to_json(
+                                mhr_output,
+                                output_filename="mhr_raw_%05u.json" % frameNumber
+                            )
+
 
                         #Uncomment to also do a matlab visualization
                         #save_matlab_visualization(hmr_output,output_filename="skeleton_%05u.png" % frameNumber)
@@ -415,8 +451,9 @@ def main(args):
                     if cv2.waitKey(1) & 0xFF == ord('q'):
                         break
 
-    saveCSVFileFromListOfDictsFollowingSkeletonOrder("3DPointsAzureKinect.csv",history,get_azure_kinect_skeleton())
-    saveCSVFileFromListOfDicts("3DPoints.csv",history)
+    #saveCSVFileFromListOfDictsFollowingSkeletonOrder("3DPointsAzureKinect.csv",history,get_azure_kinect_skeleton())
+    #saveCSVFileFromListOfDicts("3DPoints.csv",history)
+    save_raw_dict_to_json(history, output_filename="mhr_history.json")
     if (args.save):
         os.system("ffmpeg -framerate %u -start_number 1 -i colorFrame_0_%%05d.jpg -s %ux%u  -y -r %u -pix_fmt yuv420p -threads 8 livelastRun3DHiRes.mp4 && rm colorFrame_0_*.jpg " % (videoFramerate,videoWidth,videoHeight,videoFramerate)) # 
     del tester.model
