@@ -31,6 +31,97 @@ from conversion import Conversion
 from mhr.mhr import MHR
 
 
+from types import SimpleNamespace
+
+
+from types import SimpleNamespace
+import torch
+
+def _to_ns(x):
+    if isinstance(x, dict):
+        ns = SimpleNamespace()
+        for k, v in x.items():
+            setattr(ns, k, _to_ns(v))
+        return ns
+    if isinstance(x, list):
+        return [_to_ns(v) for v in x]
+    return x
+
+class MHRWrapper:
+    def __init__(self, ts_model, meta_dict):
+        self.ts_model = ts_model
+
+        if "character" in meta_dict:
+            self.character = _to_ns(meta_dict["character"])
+
+        if "character_torch" in meta_dict:
+            self.character_torch = _to_ns(meta_dict["character_torch"])
+
+        self._num_identity_blendshapes = meta_dict.get("num_identity_blendshapes", None)
+        self._num_face_expression_blendshapes = meta_dict.get(
+            "num_face_expression_blendshapes", None
+        )
+
+    def to(self, device):
+        self.ts_model = self.ts_model.to(device)
+
+        def move(x):
+            if isinstance(x, torch.Tensor):
+                return x.to(device)
+            if isinstance(x, list):
+                return [move(v) for v in x]
+            if hasattr(x, "__dict__"):
+                for k, v in vars(x).items():
+                    setattr(x, k, move(v))
+                return x
+            return x
+
+        if hasattr(self, "character"):
+            self.character = move(self.character)
+
+        if hasattr(self, "character_torch"):
+            self.character_torch = move(self.character_torch)
+
+        return self
+
+    def __call__(self, *args, **kwargs):
+        return self.ts_model(*args, **kwargs)
+
+    def get_num_identity_blendshapes(self):
+        if self._num_identity_blendshapes is None:
+            raise AttributeError("num_identity_blendshapes not present in dumped metadata")
+        return int(self._num_identity_blendshapes)
+
+    def get_num_face_expression_blendshapes(self):
+        if self._num_face_expression_blendshapes is None:
+            raise AttributeError("num_face_expression_blendshapes not present in dumped metadata")
+        return int(self._num_face_expression_blendshapes)
+
+
+
+
+
+def load_mhr_meta_from_dump(path):
+    d = torch.load(path, map_location="cpu", weights_only=False)
+
+    meta = SimpleNamespace()
+    meta.character = SimpleNamespace()
+    meta.character.mesh = SimpleNamespace()
+    meta.character.parameter_transform = SimpleNamespace()
+
+    if "character.mesh.faces" in d:
+        meta.character.mesh.faces = d["character.mesh.faces"]
+
+    if "character.parameter_transform.pose_parameters" in d:
+        meta.character.parameter_transform.pose_parameters = d["character.parameter_transform.pose_parameters"]
+
+    return meta
+
+def load_mhr_wrapper(ts_path, meta_path):
+    ts_model = torch.jit.load(ts_path, map_location="cpu")
+    meta = torch.load(meta_path, map_location="cpu", weights_only=False)
+    return MHRWrapper(ts_model, meta)
+
 
 def load_mhr_faces():
     from pathlib import Path
@@ -90,76 +181,97 @@ class Tester:
         self.model.eval()
         #self.renderer = Renderer(focal_length=1468.6047, img_w=1280, img_h=720, faces=self.smplx_cam_head.smplx.faces, same_mesh_color=False)
 
-        print("A: pretrained model loaded", flush=True)
+        print("B: before loading MHR wrapper", flush=True)
 
-        print("B: before MHR.from_files", flush=True)
-        #self.mhr_model = MHR.from_files(lod=1, device=torch.device("cpu"))
-        self.mhr_model = torch.load("mhr_model.pt", map_location="cpu",weights_only=False)
-        print("C: after MHR.from_files", flush=True)
+        self.mhr_model = load_mhr_wrapper(
+    "mhr_model.pt",
+    "mhr_portable_dump/mhr_conversion_meta_lod1.pt",
+)
+
+        print("C: after loading MHR wrapper", flush=True)
 
         print("D: before Conversion", flush=True)
-        self.converter = Conversion(mhr_model=self.mhr_model, smpl_model=self.smplx_cam_head.smplx, method="pytorch", batch_size=32, )
+
+        self.converter = Conversion(
+    mhr_model=self.mhr_model,
+    smpl_model=self.smplx_cam_head.smplx,
+    method="pytorch",
+    batch_size=32,
+)
+
         print("E: after Conversion", flush=True)
 
         print("F: before Renderer", flush=True)
-        #mhr_faces = self.mhr_model.character.mesh.faces
-        mhr_faces = load_mhr_faces()
-        self.renderer = Renderer(focal_length=1468.6047, img_w=1280, img_h=720, faces=mhr_faces, same_mesh_color=False, )
+
+        mhr_faces = np.asarray(self.mhr_model.character.mesh.faces)
+
+        self.renderer = Renderer(
+    focal_length=1468.6047,
+    img_w=1280,
+    img_h=720,
+    faces=mhr_faces,
+    same_mesh_color=False,
+)
+
         print("G: after Renderer", flush=True)
+
+
+
 
     def _convert_smplx_output_to_mhr(self, hmr_output, single_identity=False, is_tracking=False):
         """
         Convert HMR/SMPL-X output to MHR parameters and MHR vertices.
         Returns a dictionary with MHR-only data.
         """
-        # SMPL-X vertices in camera space
-        smplx_vertices_cam = hmr_output["vertices"] + hmr_output["pred_cam_t"].unsqueeze(1)
+        # Make sure we stay in float32 here
+        with torch.amp.autocast("cuda", enabled=False):
+            smplx_vertices_cam = (
+                hmr_output["vertices"].float() +
+                hmr_output["pred_cam_t"].float().unsqueeze(1)
+            )
 
-        conversion_results = self.converter.convert_smpl2mhr(
-        smpl_vertices=smplx_vertices_cam,
-        smpl_parameters=None,
-        single_identity=single_identity,
-        exclude_expression=False,
-        is_tracking=is_tracking,
-        return_mhr_meshes=False,
-        return_mhr_parameters=True,
-        return_mhr_vertices=True,
-        return_fitting_errors=True,
-    )
+            conversion_results = self.converter.convert_smpl2mhr(
+                smpl_vertices=smplx_vertices_cam,
+                smpl_parameters=None,
+                single_identity=single_identity,    
+                exclude_expression=False,
+                is_tracking=is_tracking,
+                return_mhr_meshes=False,
+                return_mhr_parameters=True,
+                return_mhr_vertices=True,
+                return_fitting_errors=True,
+            )
 
-        mhr_vertices_cm = conversion_results.result_vertices
-        mhr_params = conversion_results.result_parameters
-        mhr_errors = conversion_results.result_errors
+            mhr_vertices_cm = conversion_results.result_vertices
+            mhr_params = conversion_results.result_parameters
+            mhr_errors = conversion_results.result_errors
 
-        # MHR package uses centimeters
-        if isinstance(mhr_vertices_cm, torch.Tensor):
             mhr_vertices_m = mhr_vertices_cm / 100.0
-        else:
-            mhr_vertices_m = mhr_vertices_cm / 100.0
 
-        # Optional: reconstruct through the real MHR forward model for consistency
-        identity_coeffs = mhr_params["identity_coeffs"]
-        model_parameters = mhr_params["lbs_model_params"]
-        face_expr_coeffs = mhr_params["face_expr_coeffs"]
+            identity_coeffs = mhr_params["identity_coeffs"].float()
+            model_parameters = mhr_params["lbs_model_params"].float()
+            face_expr_coeffs = mhr_params["face_expr_coeffs"].float()
 
-        with torch.no_grad():
-            mhr_forward_verts_cm, mhr_skel_state = self.mhr_model(
-            identity_coeffs=identity_coeffs,
-            model_parameters=model_parameters,
-            face_expr_coeffs=face_expr_coeffs,
-        )
+            with torch.no_grad():
+                mhr_forward_verts_cm, mhr_skel_state = self.mhr_model(
+                    identity_coeffs=identity_coeffs,
+                    model_parameters=model_parameters,
+                    face_expr_coeffs=face_expr_coeffs,
+                )
 
-        mhr_forward_verts_m = mhr_forward_verts_cm / 100.0
+            mhr_forward_verts_m = mhr_forward_verts_cm / 100.0
 
         return {
-        "mhr_vertices_cm": mhr_vertices_cm,
-        "mhr_vertices_m": mhr_vertices_m,
-        "mhr_forward_vertices_cm": mhr_forward_verts_cm,
-        "mhr_forward_vertices_m": mhr_forward_verts_m,
-        "mhr_parameters": mhr_params,
-        "mhr_skel_state": mhr_skel_state,
-        "mhr_errors": mhr_errors,
-       }
+            "mhr_vertices_cm": mhr_vertices_cm,
+            "mhr_vertices_m": mhr_vertices_m,
+            "mhr_forward_vertices_cm": mhr_forward_verts_cm,
+            "mhr_forward_vertices_m": mhr_forward_verts_m,
+            "mhr_parameters": mhr_params,
+            "mhr_skel_state": mhr_skel_state,
+            "mhr_errors": mhr_errors,
+        }
+
+
 
     def _build_model(self):
         self.hparams = self.model_cfg
@@ -478,7 +590,9 @@ class Tester:
         )
 
         # Intercept here: SMPL-X -> MHR
-        mhr_output = self._convert_smplx_output_to_mhr(
+
+        with torch.enable_grad():
+          mhr_output = self._convert_smplx_output_to_mhr(
             hmr_output,
             single_identity=False,
             is_tracking=True,
