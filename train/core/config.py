@@ -302,6 +302,27 @@ hparams.MODEL.POSE_LOSS_WEIGHT = 1.
 hparams.MODEL.BETA_LOSS_WEIGHT = 0.001
 hparams.MODEL.LOSS_WEIGHT = 60.
 hparams.MODEL.ADVERSARIAL_LOSS_WEIGHT = 0.1
+# MHR-specific loss weights (used by MHRD-Pose training)
+hparams.MODEL.IDENTITY_LOSS_WEIGHT = 1.0
+hparams.MODEL.EXPR_LOSS_WEIGHT = 0.5
+
+# MHR model configuration (used by MHRD-Pose training)
+hparams.MHR = CN()
+hparams.MHR.MODEL_DIR = 'assets'
+hparams.MHR.MODEL_PT = 'assets/mhr_model.pt'
+hparams.MHR.FBX_PATH = 'assets/lod1.fbx'
+hparams.MHR.BLENDSHAPES_PATH = 'assets/corrective_blendshapes_lod1.npz'
+hparams.MHR.CORRECTIVE_ACTIVATION_PATH = 'assets/corrective_activation.npz'
+hparams.MHR.NUM_IDENTITY_BLENDSHAPES = 45
+hparams.MHR.NUM_FACE_EXPRESSION_BLENDSHAPES = 72
+hparams.MHR.NUM_LBS_MODEL_PARAMS = 144
+hparams.MHR.NUM_TOTAL_PARAMS = 261
+hparams.MHR.NUM_MHR_SKELETON_JOINTS = 24
+hparams.MHR.LOD = 1
+hparams.MHR.CM_TO_M = 0.01
+hparams.MHR.M_TO_CM = 100.0
+hparams.MHR.USE_CACHE = True
+hparams.MHR.CACHE_DIR = 'data/mhr_cache'
 
 hparams.TRIAL = CN()
 hparams.TRIAL.visualize = False

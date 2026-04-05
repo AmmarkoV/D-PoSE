@@ -1,0 +1,138 @@
+# MHR Training Configuration
+# This configuration file is for training the MHR-based HMR model
+# All SMPL dependencies have been removed
+
+# General settings
+LOG_DIR: 'logs/mhr'
+EXP_NAME: 'mhr_training'
+SEED_VALUE: 42
+RUN_TEST: False
+
+# Dataset settings
+DATASET:
+  NOISE_FACTOR: 0.4
+  SCALE_FACTOR: 0.25
+  CROP_PROB: 0.0
+  CROP_FACTOR: 0.0
+  BATCH_SIZE: 64
+  NUM_WORKERS: 8
+  PIN_MEMORY: True
+  SHUFFLE_TRAIN: True
+  TRAIN_DS: 'all'
+  VAL_DS: '3dpw-val-cam'
+  IMG_RES: 224
+  MESH_COLOR: 'pinkish'
+  DATASETS_AND_RATIOS: 'agora'
+  CROP_PERCENT: 1.0
+  ALB: False
+  ALB_PROB: 0.3
+  proj_verts: False
+  FOCAL_LENGTH: 5000
+  USE_DEPTH: True
+  USE_DEPTH_CONC: True
+  USE_SEGM: False
+  USE_BG_DEPTH: False
+  SUPERVISE_DEPTH: False
+  SUPERVISE_SEGM: False
+  ADVERSARIAL: False
+  UPSAMPLE_HRNET: False
+  DEPTH_ONLY: False
+  USE_MULTIHEAD_ATTENTION: False
+  COMPLETE_TRAIN: False
+  VAL_INTERVAL: 1000
+  DISC_DATASETS: ''
+  RUN_NAME: 'mhr_training'
+  OCCLUSION_PROB: 0.0
+  DEPTH_MAP_SIZE: 224
+
+# Optimizer settings
+OPTIMIZER:
+  TYPE: 'adam'
+  LR: 0.00005
+  WD: 0.0
+
+# Training settings
+TRAINING:
+  RESUME: null
+  PRETRAINED_CKPT: null
+  PRETRAINED_LIT: null
+  MAX_EPOCHS: 100
+  LOG_SAVE_INTERVAL: 50
+  LOG_FREQ_TB_IMAGES: 500
+  CHECK_VAL_EVERY_N_EPOCH: 1
+  RELOAD_DATALOADERS_EVERY_EPOCH: True
+  TEST_BEFORE_TRAINING: False
+  SAVE_IMAGES: False
+  USE_AMP: False
+  GT_VIS: False
+  WP_VIS: False
+  FP_VIS: False
+  MESH_VIS: False
+  fullbody_mode: 'default'
+  ckpt_mode: ''
+  reduce_lr: False
+  increase_lr: False
+  hand_ckpt: ''
+  body_ckpt: ''
+  finetune: False
+
+# Testing settings
+TESTING:
+  GT_VIS: False
+  WP_VIS: False
+  FP_VIS: False
+  MESH_VIS: False
+
+# Model settings
+MODEL:
+  BACKBONE: 'hrnet-w32'
+  SHAPE_LOSS_WEIGHT: 1.0
+  JOINT_LOSS_WEIGHT: 5.0
+  KEYPOINT_LOSS_WEIGHT: 10.0
+  POSE_LOSS_WEIGHT: 1.0
+  BETA_LOSS_WEIGHT: 0.001
+  IDENTITY_LOSS_WEIGHT: 1.0
+  EXPR_LOSS_WEIGHT: 0.5
+  LOSS_WEIGHT: 60.0
+  ADVERSARIAL_LOSS_WEIGHT: 0.1
+
+# Trial settings
+TRIAL:
+  visualize: False
+  bedlam_bbox: True
+  verts_loss: False
+  only_verts_loss: False
+  keypoints_loss: False
+  only_keypoints_loss: False
+  param_loss: False
+  losses_abl: 'None'
+  criterion: 'mse'
+  version: 'synthetic'
+  finetune_3dpw: False
+
+# MHR-specific settings
+MHR:
+  # MHR model paths
+  MODEL_DIR: 'assets'
+  MODEL_PT: 'assets/mhr_model.pt'
+  FBX_PATH: 'assets/lod1.fbx'
+  BLENDSHAPES_PATH: 'assets/corrective_blendshapes_lod1.npz'
+  CORRECTIVE_ACTIVATION_PATH: 'assets/corrective_activation.npz'
+
+  # MHR parameters (verified)
+  NUM_IDENTITY_BLENDSHAPES: 45
+  NUM_FACE_EXPRESSION_BLENDSHAPES: 72
+  NUM_LBS_MODEL_PARAMS: 144
+  NUM_TOTAL_PARAMS: 261
+  NUM_MHR_SKELETON_JOINTS: 24
+
+  # Level of Detail
+  LOD: 1
+
+  # Unit conversion (MHR uses centimeters)
+  CM_TO_M: 0.01
+  M_TO_CM: 100.0
+
+  # Cache settings
+  USE_CACHE: True
+  CACHE_DIR: 'data/mhr_cache'
