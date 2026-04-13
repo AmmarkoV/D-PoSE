@@ -86,6 +86,32 @@ log_error() {
 }
 
 # =============================================================================
+# Ensure Python 3.12 is available (required for pymomentum from conda-forge)
+# pymomentum>=0.1.90 only has conda-forge builds for Python >=3.12.
+# =============================================================================
+log_info "Checking for Python 3.12 (required for pymomentum)..."
+if ! command -v python3.12 &> /dev/null; then
+    log_info "Python 3.12 not found — installing via deadsnakes PPA..."
+    if command -v apt-get &> /dev/null; then
+        sudo apt-get install -y software-properties-common
+        sudo add-apt-repository -y ppa:deadsnakes/ppa
+        sudo apt-get update
+        sudo apt-get install -y python3.12 python3.12-venv python3.12-dev
+        log_success "Python 3.12 installed"
+    else
+        log_warning "apt-get not available — install Python 3.12 manually"
+    fi
+else
+    log_success "Python 3.12 already available: $(python3.12 --version)"
+fi
+
+# Use Python 3.12 if available, otherwise fall back to default
+if command -v python3.12 &> /dev/null; then
+    PYTHON_CMD="python3.12"
+    log_info "Using Python 3.12 for venv"
+fi
+
+# =============================================================================
 # Check Python Version
 # =============================================================================
 log_info "Checking Python version..."
@@ -222,16 +248,44 @@ sed -i 's/from numpy import bool, int, float, complex, object, unicode, str, nan
 log_success "chumpy installed and patched"
 
 # =============================================================================
-# Install PyMomentum (MHR)
+# Install PyMomentum (MHR) via conda-forge
+# The pip package 'pymomentum' is a stub (no actual C++ bindings).
+# The real package (>=0.1.90) with geometry bindings is only on conda-forge.
+# We install miniforge, install pymomentum there, then symlink into the venv.
 # =============================================================================
-log_info "Installing PyMomentum (MHR library)..."
-log_warning "PyMomentum may require manual installation from NVIDIA."
-pip install pymomentum || {
-    log_warning "Failed to install pymomentum via pip."
-    log_info "Manual installation required:"
-    log_info "  1. Clone: git clone https://github.com/NVlabs/momentum-human-rig.git"
-    log_info "  2. Install: pip install -e ./momentum-human-rig"
-}
+log_info "Installing PyMomentum via conda-forge (miniforge)..."
+
+MINIFORGE_DIR="${PROJECT_ROOT}/miniforge3"
+# pymomentum requires Python >=3.12; use a dedicated conda env for it
+PYMOMENTUM_CONDA_ENV="${MINIFORGE_DIR}/envs/pymomentum_env"
+VENV_SP="${VENV_PATH}/lib/python$(${PYTHON_CMD} -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')/site-packages"
+
+if [ ! -d "${MINIFORGE_DIR}" ]; then
+    log_info "Downloading Miniforge installer..."
+    wget -q -O /tmp/miniforge.sh \
+        https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh
+    bash /tmp/miniforge.sh -b -p "${MINIFORGE_DIR}"
+    rm -f /tmp/miniforge.sh
+    log_success "Miniforge installed at ${MINIFORGE_DIR}"
+else
+    log_warning "Miniforge already exists at ${MINIFORGE_DIR}"
+fi
+
+log_info "Creating conda env with Python 3.12 and pymomentum..."
+"${MINIFORGE_DIR}/bin/mamba" create -y -n pymomentum_env python=3.12 "pymomentum>=0.1.90" -c conda-forge || \
+    "${MINIFORGE_DIR}/bin/conda" create -y -n pymomentum_env python=3.12 "pymomentum>=0.1.90" -c conda-forge || {
+        log_warning "Failed to install pymomentum from conda-forge."
+        log_warning "MHR on-the-fly conversion will not work without it."
+    }
+
+# Symlink pymomentum from the conda env into the venv's site-packages
+CONDA_SP="${PYMOMENTUM_CONDA_ENV}/lib/python3.12/site-packages"
+if [ -d "${CONDA_SP}/pymomentum" ]; then
+    ln -sf "${CONDA_SP}/pymomentum" "${VENV_SP}/pymomentum"
+    log_success "pymomentum symlinked into venv from ${CONDA_SP}"
+else
+    log_warning "pymomentum not found in ${CONDA_SP} — symlink skipped"
+fi
 
 # =============================================================================
 # Install Additional Utilities
