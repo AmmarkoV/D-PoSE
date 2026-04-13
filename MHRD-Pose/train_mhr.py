@@ -35,8 +35,9 @@ from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
 # add the directory itself to sys.path and import its modules directly.
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.dirname(_THIS_DIR)
-sys.path.insert(0, _PROJECT_ROOT)   # D-PoSE root  (for 'train.*' imports)
-sys.path.insert(0, _THIS_DIR)       # MHRD-Pose dir (for 'mhr_trainer' etc.)
+sys.path.insert(0, _PROJECT_ROOT)                           # D-PoSE root  (for 'train.*' imports)
+sys.path.insert(0, _THIS_DIR)                               # MHRD-Pose dir (for 'mhr_trainer' etc.)
+sys.path.insert(0, os.path.join(_PROJECT_ROOT, 'MHR'))      # MHR root (for 'mhr.mhr' and 'mhr.io' imports)
 
 from mhr_trainer import MHRTrainer
 from train.utils.train_utils import update_hparams

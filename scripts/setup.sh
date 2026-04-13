@@ -212,17 +212,13 @@ log_success "smplx installed"
 log_info "Installing chumpy (SMPL .pkl loader dependency)..."
 pip install chumpy --no-build-isolation
 # Patch chumpy for Python 3.11+ (getargspec removed) and NumPy 1.24+ (deprecated aliases removed)
-CHUMPY_PATH=$($PYTHON_CMD -c "import chumpy, os; print(os.path.dirname(chumpy.__file__))")
+# Note: chumpy crashes on import before patching, so use find instead of python -c
+CHUMPY_PATH=$(find "${VENV_PATH}" -name "ch.py" -path "*/chumpy/*" | head -1 | xargs dirname)
+# Fix 1: inspect.getargspec removed in Python 3.11
 sed -i 's/inspect\.getargspec/inspect.getfullargspec/g' "$CHUMPY_PATH/ch.py"
-for f in "$CHUMPY_PATH/__init__.py" "$CHUMPY_PATH/ch.py" "$CHUMPY_PATH/reordering.py"; do
-    [ -f "$f" ] && sed -i \
-        's/np\.bool\b/np.bool_/g;
-         s/np\.int\b/np.int_/g;
-         s/np\.float\b/np.float64/g;
-         s/np\.complex\b/np.complex128/g;
-         s/np\.object\b/np.object_/g;
-         s/np\.str\b/np.str_/g' "$f"
-done
+# Fix 2: numpy no longer exports built-in aliases (bool, int, float, etc.) — strip them from the import
+sed -i 's/from numpy import bool, int, float, complex, object, unicode, str, nan, inf/from numpy import nan, inf/' \
+    "$CHUMPY_PATH/__init__.py"
 log_success "chumpy installed and patched"
 
 # =============================================================================
