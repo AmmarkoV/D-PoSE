@@ -113,7 +113,7 @@ source ${VENV_PATH}/bin/activate
 # Upgrade pip
 # =============================================================================
 log_info "Upgrading pip..."
-pip install --upgrade pip wheel setuptools
+pip install --upgrade pip wheel setuptools pkgutil_resolve_name
 
 # =============================================================================
 # Install PyTorch
@@ -154,7 +154,7 @@ fi
 # Install PyTorch Lightning
 # =============================================================================
 log_info "Installing PyTorch Lightning..."
-pip install pytorch-lightning==1.9.0
+pip install "pytorch-lightning==1.9.0" "lightning-utilities<0.9"
 log_success "PyTorch Lightning installed"
 
 # =============================================================================
