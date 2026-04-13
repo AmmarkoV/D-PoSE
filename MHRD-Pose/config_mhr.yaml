@@ -22,7 +22,7 @@ DATASET:
   VAL_DS: '3dpw-val-cam'
   IMG_RES: 224
   MESH_COLOR: 'pinkish'
-  DATASETS_AND_RATIOS: 'agora'
+  DATASETS_AND_RATIOS: 'agora-bfh_agora-body'
   CROP_PERCENT: 1.0
   ALB: False
   ALB_PROB: 0.3

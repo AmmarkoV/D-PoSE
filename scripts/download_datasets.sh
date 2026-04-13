@@ -46,22 +46,26 @@ echo -e "${GREEN}✓ Instructions saved to data/body_models/DOWNLOAD_INSTRUCTION
 # =============================================================================
 echo -e "\n${YELLOW}[2/6] Downloading HRNet pretrained checkpoints...${NC}"
 
-# HRNet W32 COCO
+# HRNet W32 COCO (pose estimation checkpoint, 256x192)
 if [ ! -f "data/ckpt/pretrained/pose_hrnet_w32_256x192.pth" ]; then
     echo "Downloading HRNet W32 COCO checkpoint..."
     wget -O data/ckpt/pretrained/pose_hrnet_w32_256x192.pth \
-        https://download.openmmlab.com/hrnet/hrnetv2/hrnetv2_w32-36af84mm.pth || \
-    echo "Warning: Failed to download. Please download manually from OpenMMLab."
+        "https://download.openmmlab.com/mmpose/top_down/hrnet/hrnet_w32_coco_256x192-c78dce93_20200708.pth" || \
+    wget -O data/ckpt/pretrained/pose_hrnet_w32_256x192.pth \
+        "https://github.com/leoxiaobin/deep-high-resolution-net.pytorch/releases/download/v1.0/pose_hrnet_w32_256x192.pth" || \
+    echo "Warning: Failed to download HRNet W32. Copy pose_hrnet_w32_256x192.pth manually to data/ckpt/pretrained/."
 else
     echo "HRNet W32 checkpoint already exists."
 fi
 
-# HRNet W48 COCO
+# HRNet W48 COCO (pose estimation checkpoint, 256x192)
 if [ ! -f "data/ckpt/pretrained/pose_hrnet_w48_256x192.pth" ]; then
     echo "Downloading HRNet W48 COCO checkpoint..."
     wget -O data/ckpt/pretrained/pose_hrnet_w48_256x192.pth \
-        https://download.openmmlab.com/hrnet/hrnetv2/hrnetv2_w48-8f125fad.pth || \
-    echo "Warning: Failed to download. Please download manually from OpenMMLab."
+        "https://download.openmmlab.com/mmpose/top_down/hrnet/hrnet_w48_coco_256x192-b9e0b3ab_20200708.pth" || \
+    wget -O data/ckpt/pretrained/pose_hrnet_w48_256x192.pth \
+        "https://github.com/leoxiaobin/deep-high-resolution-net.pytorch/releases/download/v1.0/pose_hrnet_w48_256x192.pth" || \
+    echo "Warning: Failed to download HRNet W48. Copy pose_hrnet_w48_256x192.pth manually to data/ckpt/pretrained/."
 else
     echo "HRNet W48 checkpoint already exists."
 fi
