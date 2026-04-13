@@ -152,13 +152,6 @@ pip install smplx
 log_success "smplx installed"
 
 # =============================================================================
-# Install Deep High Resolution Net
-# =============================================================================
-log_info "Installing deep-high-resolution-net..."
-pip install git+${GIT_PIP_PREFIX}/leoxiaobin/deep-high-resolution-net.pytorch.git
-log_success "Deep High Resolution Net installed"
-
-# =============================================================================
 # Install PyMomentum (MHR)
 # =============================================================================
 log_info "Installing PyMomentum (MHR library)..."
