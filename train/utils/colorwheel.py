@@ -13,7 +13,7 @@ def make_color_wheel_image(img_width, img_height):
         opencv image (numpy array): color wheel based image
     """
     hue = np.fromfunction(lambda i, j: (np.arctan2(i-img_height/2, img_width/2-j) + np.pi)*(180/np.pi)/2,
-                          (img_height, img_width), dtype=np.float)
+                          (img_height, img_width), dtype=np.float64)
     saturation = np.ones((img_height, img_width)) * 255
     value = np.ones((img_height, img_width)) * 255
     hsl = np.dstack((hue, saturation, value))

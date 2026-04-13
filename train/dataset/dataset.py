@@ -102,11 +102,11 @@ class DatasetHMR(Dataset):
 
         if self.is_train:
             if '3dpw-train-smplx' in self.dataset:
-                self.pose_cam = self.data['smplx_pose'][:, :NUM_JOINTS_SMPLX*3].astype(np.float)
-                self.betas = self.data['smplx_shape'][:, :11].astype(np.float)
+                self.pose_cam = self.data['smplx_pose'][:, :NUM_JOINTS_SMPLX*3].astype(np.float32)
+                self.betas = self.data['smplx_shape'][:, :11].astype(np.float32)
             else:
-                self.pose_cam = self.data['pose_cam'][:, :NUM_JOINTS_SMPLX*3].astype(np.float)
-                self.betas = self.data['shape'].astype(np.float)
+                self.pose_cam = self.data['pose_cam'][:, :NUM_JOINTS_SMPLX*3].astype(np.float32)
+                self.betas = self.data['shape'].astype(np.float32)
             # For AGORA and 3DPW num betas are 10
             if self.betas.shape[-1] == 10:
                 self.betas = np.hstack((self.betas, np.zeros((self.betas.shape[0], 1))))
@@ -122,8 +122,8 @@ class DatasetHMR(Dataset):
             if 'trans_cam' in self.data:
                 self.trans_cam = self.data['trans_cam']
         elif 'orbit-stadium-bmi' in self.dataset:
-            self.pose_cam = self.data['pose_cam'].astype(np.float)
-            self.betas = self.data['shape'].astype(np.float)
+            self.pose_cam = self.data['pose_cam'].astype(np.float32)
+            self.betas = self.data['shape'].astype(np.float32)
             self.joints = self.data['gtkps']
             self.joints = self.joints[:, :24]
             #import ipdb; ipdb.set_trace()
@@ -133,8 +133,8 @@ class DatasetHMR(Dataset):
                 self.pose_cam = np.zeros((self.imgname.shape[0], 66))
                 self.betas = np.zeros((self.imgname.shape[0], 11))
             else:
-                self.pose_cam = self.data['pose_cam'].astype(np.float)
-                self.betas = self.data['shape'].astype(np.float)
+                self.pose_cam = self.data['pose_cam'].astype(np.float32)
+                self.betas = self.data['shape'].astype(np.float32)
         if self.is_train:
             if '3dpw-train-smplx' in self.dataset: # Only for 3dpw training
                 self.joint_map = constants.joint_mapping(constants.COCO_18, constants.SMPL_24)
