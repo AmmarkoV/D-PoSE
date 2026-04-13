@@ -119,7 +119,7 @@ log_success "PyTorch installed"
 # =============================================================================
 log_info "Installing neural_renderer_pytorch..."
 if command -v nvcc &> /dev/null; then
-    pip install neural_renderer_pytorch || {
+    pip install --no-build-isolation neural_renderer_pytorch || {
         log_warning "neural_renderer_pytorch build failed."
         log_info "This is a hard dependency of train/losses/losses.py."
         log_info "Ensure CUDA toolkit (nvcc) matches your PyTorch CUDA version and retry:"
