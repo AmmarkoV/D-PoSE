@@ -152,13 +152,6 @@ pip install smplx
 log_success "smplx installed"
 
 # =============================================================================
-# Install MPT (Multi-Person-Tracker)
-# =============================================================================
-log_info "Installing MPT (Multi-Person-Tracker)..."
-pip install git+${GIT_PIP_PREFIX}/MooreThreads/MPT.git
-log_success "MPT installed"
-
-# =============================================================================
 # Install Deep High Resolution Net
 # =============================================================================
 log_info "Installing deep-high-resolution-net..."
