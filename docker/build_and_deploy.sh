@@ -24,7 +24,6 @@ docker pull tensorflow/tensorflow:latest-gpu
 
 # build and run tensorflow
 docker build \
-    --ssh default \
 	-t $NAME \
 	$dockerfile_pth \
 	--build-arg user_id=$UID
@@ -35,14 +34,14 @@ docker build \
 #--tmpfs /home/user/ram:rw,size=140g,mode=1777 \
 docker run -d \
 	--gpus all \
-	--shm-size 32G \
+	--shm-size 8G \
     --cap-add=SYS_NICE \
     --mount type=tmpfs,destination=/home/user/ram,tmpfs-mode=1777 \
 	-it \
 	--name $NAME-container \
 	-v $mount_pth:/home/user/workspace \
     -v /storage:/storage \
-    -p 6005:6005 \
+    -p 6004:6004 \
 	$NAME
 
 
