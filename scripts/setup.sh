@@ -9,6 +9,34 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 PYTHON_CMD="${PYTHON_CMD:-python3}"
 
+# =============================================================================
+# GitHub PAT (Personal Access Token)
+# =============================================================================
+# GitHub no longer accepts passwords for git operations over HTTPS.
+# Export your PAT before running this script:
+#
+#   export GITHUB_PAT="ghp_xxxxxxxxxxxxxxxxxxxx"
+#
+# Generate one at: GitHub → Settings → Developer settings →
+#                  Personal access tokens → Fine-grained tokens
+# Required permission: Contents (read-only) for any private repo,
+# or no permissions needed for public repos via authenticated clone.
+# =============================================================================
+if [ -z "${GITHUB_PAT}" ]; then
+    echo ""
+    echo "WARNING: GITHUB_PAT is not set."
+    echo "  pip installs from GitHub may fail with authentication errors."
+    echo "  Export your token before running this script:"
+    echo ""
+    echo "    export GITHUB_PAT=\"ghp_xxxxxxxxxxxxxxxxxxxx\""
+    echo ""
+    echo "  Continuing without PAT (will work for public repos without auth)..."
+    echo ""
+    GIT_PIP_PREFIX="https://github.com"
+else
+    GIT_PIP_PREFIX="https://${GITHUB_PAT}@github.com"
+fi
+
 # Colors
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -127,14 +155,14 @@ log_success "smplx installed"
 # Install MPT (Multi-Person-Tracker)
 # =============================================================================
 log_info "Installing MPT (Multi-Person-Tracker)..."
-pip install git+https://github.com/MooreThreads/MPT.git
+pip install git+${GIT_PIP_PREFIX}/MooreThreads/MPT.git
 log_success "MPT installed"
 
 # =============================================================================
 # Install Deep High Resolution Net
 # =============================================================================
 log_info "Installing deep-high-resolution-net..."
-pip install git+https://github.com/leoxiaobin/deep-high-resolution-net.pytorch.git
+pip install git+${GIT_PIP_PREFIX}/leoxiaobin/deep-high-resolution-net.pytorch.git
 log_success "Deep High Resolution Net installed"
 
 # =============================================================================
