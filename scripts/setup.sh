@@ -10,6 +10,28 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 PYTHON_CMD="${PYTHON_CMD:-python3}"
 
 # =============================================================================
+# CUDA / PyTorch wheel tag — resolved once, used throughout the script.
+# Override by exporting TORCH_CUDA_TAG before running, e.g.:
+#   export TORCH_CUDA_TAG=cu124
+# =============================================================================
+if [ -z "${TORCH_CUDA_TAG}" ]; then
+    if command -v nvidia-smi &> /dev/null; then
+        SYS_CUDA=$(nvidia-smi 2>/dev/null | grep -oP "CUDA Version: \K[0-9]+\.[0-9]+")
+        CUDA_MAJOR=$(echo "$SYS_CUDA" | cut -d. -f1)
+        CUDA_MINOR=$(echo "$SYS_CUDA" | cut -d. -f2)
+        if   [ "$CUDA_MAJOR" -eq 11 ];                                        then TORCH_CUDA_TAG="cu118"
+        elif [ "$CUDA_MAJOR" -eq 12 ] && [ "$CUDA_MINOR" -le 3 ];            then TORCH_CUDA_TAG="cu121"
+        elif [ "$CUDA_MAJOR" -eq 12 ] && [ "$CUDA_MINOR" -le 5 ];            then TORCH_CUDA_TAG="cu124"
+        else                                                                       TORCH_CUDA_TAG="cu126"
+        fi
+        echo "[INFO] System CUDA ${SYS_CUDA} → PyTorch wheel tag: ${TORCH_CUDA_TAG}"
+    else
+        TORCH_CUDA_TAG="cpu"
+        echo "[WARNING] No nvidia-smi found — will install CPU-only PyTorch."
+    fi
+fi
+
+# =============================================================================
 # GitHub PAT (Personal Access Token)
 # =============================================================================
 # GitHub no longer accepts passwords for git operations over HTTPS.
@@ -96,39 +118,39 @@ pip install --upgrade pip wheel setuptools
 # =============================================================================
 # Install PyTorch
 # =============================================================================
-log_info "Installing PyTorch..."
-
-# Check if CUDA is available
-if command -v nvidia-smi &> /dev/null; then
-    CUDA_VERSION=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d ' ')
-    if [ -n "$CUDA_VERSION" ]; then
-        log_info "CUDA detected. Installing PyTorch with CUDA support..."
-        pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
-    else
-        log_warning "nvidia-smi found but couldn't determine CUDA version. Installing CPU-only PyTorch."
-        pip install torch torchvision torchaudio
-    fi
+log_info "Installing PyTorch (tag: ${TORCH_CUDA_TAG})..."
+if [ "$TORCH_CUDA_TAG" = "cpu" ]; then
+    pip install --force-reinstall torch torchvision torchaudio
 else
-    log_warning "No CUDA detected. Installing CPU-only PyTorch."
-    pip install torch torchvision torchaudio
+    pip install --force-reinstall torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/${TORCH_CUDA_TAG}"
 fi
 log_success "PyTorch installed"
 
 # =============================================================================
 # Install neural_renderer_pytorch (requires CUDA + nvcc to compile)
+# The PyPI package (1.1.3) uses AT_CHECK which was removed in PyTorch 2.x.
+# We clone, patch to TORCH_CHECK, and install from source.
 # =============================================================================
-log_info "Installing neural_renderer_pytorch..."
+log_info "Installing neural_renderer_pytorch from source (with PyTorch 2.x patch)..."
 if command -v nvcc &> /dev/null; then
-    pip install --no-build-isolation neural_renderer_pytorch || {
+    NR_TMP=$(mktemp -d)
+    git clone --quiet https://github.com/daniilidis-group/neural_renderer "$NR_TMP/neural_renderer"
+    # Replace removed AT_CHECK with TORCH_CHECK and deprecated .type() calls
+    find "$NR_TMP/neural_renderer" -name "*.cpp" -exec \
+        sed -i \
+            -e 's/AT_CHECK/TORCH_CHECK/g' \
+            -e 's/\.type()\.is_cuda()/.is_cuda()/g' \
+            -e 's/\.type()\.is_contiguous()/.is_contiguous()/g' \
+        {} \;
+    pip install --no-build-isolation "$NR_TMP/neural_renderer" || {
         log_warning "neural_renderer_pytorch build failed."
-        log_info "This is a hard dependency of train/losses/losses.py."
-        log_info "Ensure CUDA toolkit (nvcc) matches your PyTorch CUDA version and retry:"
-        log_info "  pip install neural_renderer_pytorch"
+        log_warning "This is a hard dependency of train/losses/losses.py."
     }
+    rm -rf "$NR_TMP"
 else
     log_warning "nvcc not found — skipping neural_renderer_pytorch build."
     log_warning "This is a hard dependency of train/losses/losses.py."
-    log_warning "Install the CUDA toolkit and re-run: pip install neural_renderer_pytorch"
+    log_warning "Install the CUDA toolkit and re-run this script."
 fi
 
 # =============================================================================
