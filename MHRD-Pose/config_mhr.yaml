@@ -54,7 +54,7 @@ OPTIMIZER:
 # Training settings
 TRAINING:
   RESUME: null
-  PRETRAINED_CKPT: null
+  PRETRAINED_CKPT: 'coco'
   PRETRAINED_LIT: null
   MAX_EPOCHS: 100
   LOG_SAVE_INTERVAL: 50
@@ -85,7 +85,7 @@ TESTING:
 
 # Model settings
 MODEL:
-  BACKBONE: 'hrnet-w32'
+  BACKBONE: 'hrnet_w32-conv'
   SHAPE_LOSS_WEIGHT: 1.0
   JOINT_LOSS_WEIGHT: 5.0
   KEYPOINT_LOSS_WEIGHT: 10.0

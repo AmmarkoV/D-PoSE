@@ -160,11 +160,14 @@ log_success "PyTorch Lightning installed"
 # =============================================================================
 # Install System Dependencies (jpeg4py requires libturbojpeg)
 # =============================================================================
-log_info "Installing system dependencies for jpeg4py..."
+log_info "Installing system dependencies..."
 if command -v apt-get &> /dev/null; then
-    sudo apt-get install -y libturbojpeg0-dev || log_warning "Could not install libturbojpeg0-dev — jpeg4py may fail at runtime."
+    sudo apt-get install -y \
+        libturbojpeg0-dev \
+        libopenexr-dev \
+        || log_warning "Could not install some system dependencies — jpeg4py or OpenEXR may fail at runtime."
 else
-    log_warning "apt-get not found. Install libturbojpeg manually for jpeg4py support."
+    log_warning "apt-get not found. Install libturbojpeg and libopenexr manually."
 fi
 
 # =============================================================================
@@ -190,7 +193,8 @@ pip install \
     meshcat \
     yacs \
     jpeg4py \
-    torchmetrics
+    torchmetrics \
+    OpenEXR
 log_success "Core dependencies installed"
 
 # =============================================================================
