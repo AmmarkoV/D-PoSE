@@ -115,11 +115,38 @@ fi
 log_success "PyTorch installed"
 
 # =============================================================================
+# Install neural_renderer_pytorch (requires CUDA + nvcc to compile)
+# =============================================================================
+log_info "Installing neural_renderer_pytorch..."
+if command -v nvcc &> /dev/null; then
+    pip install neural_renderer_pytorch || {
+        log_warning "neural_renderer_pytorch build failed."
+        log_info "This is a hard dependency of train/losses/losses.py."
+        log_info "Ensure CUDA toolkit (nvcc) matches your PyTorch CUDA version and retry:"
+        log_info "  pip install neural_renderer_pytorch"
+    }
+else
+    log_warning "nvcc not found — skipping neural_renderer_pytorch build."
+    log_warning "This is a hard dependency of train/losses/losses.py."
+    log_warning "Install the CUDA toolkit and re-run: pip install neural_renderer_pytorch"
+fi
+
+# =============================================================================
 # Install PyTorch Lightning
 # =============================================================================
 log_info "Installing PyTorch Lightning..."
 pip install pytorch-lightning==1.9.0
 log_success "PyTorch Lightning installed"
+
+# =============================================================================
+# Install System Dependencies (jpeg4py requires libturbojpeg)
+# =============================================================================
+log_info "Installing system dependencies for jpeg4py..."
+if command -v apt-get &> /dev/null; then
+    sudo apt-get install -y libturbojpeg0-dev || log_warning "Could not install libturbojpeg0-dev — jpeg4py may fail at runtime."
+else
+    log_warning "apt-get not found. Install libturbojpeg manually for jpeg4py support."
+fi
 
 # =============================================================================
 # Install Core Dependencies
@@ -141,7 +168,10 @@ pip install \
     wandb \
     albumentations \
     trimesh \
-    meshcat
+    meshcat \
+    yacs \
+    jpeg4py \
+    torchmetrics
 log_success "Core dependencies installed"
 
 # =============================================================================
