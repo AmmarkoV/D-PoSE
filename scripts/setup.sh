@@ -135,13 +135,10 @@ log_info "Installing neural_renderer_pytorch from source (with PyTorch 2.x patch
 if command -v nvcc &> /dev/null; then
     NR_TMP=$(mktemp -d)
     git clone --quiet https://github.com/daniilidis-group/neural_renderer "$NR_TMP/neural_renderer"
-    # Replace removed AT_CHECK with TORCH_CHECK and deprecated .type() calls
-    find "$NR_TMP/neural_renderer" -name "*.cpp" -exec \
-        sed -i \
-            -e 's/AT_CHECK/TORCH_CHECK/g' \
-            -e 's/\.type()\.is_cuda()/.is_cuda()/g' \
-            -e 's/\.type()\.is_contiguous()/.is_contiguous()/g' \
-        {} \;
+    # AT_CHECK was removed in PyTorch 2.x; replace with TORCH_CHECK across all CUDA extension sources
+    for f in "$NR_TMP/neural_renderer/neural_renderer/cuda/"*.cpp; do
+        sed -i 's/AT_CHECK/TORCH_CHECK/g' "$f"
+    done
     pip install --no-build-isolation "$NR_TMP/neural_renderer" || {
         log_warning "neural_renderer_pytorch build failed."
         log_warning "This is a hard dependency of train/losses/losses.py."
