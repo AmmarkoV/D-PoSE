@@ -90,7 +90,8 @@ def train(hparams, fast_dev_run=False):
 
     # Trainer
     trainer = pl.Trainer(
-        gpus=1,
+        accelerator='gpu' if torch.cuda.is_available() else 'cpu',
+        devices=1,
         logger=experiment_loggers,
         max_epochs=hparams.TRAINING.MAX_EPOCHS,
         callbacks=[ckpt_callback],

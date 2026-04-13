@@ -154,7 +154,7 @@ fi
 # Install PyTorch Lightning
 # =============================================================================
 log_info "Installing PyTorch Lightning..."
-pip install "pytorch-lightning==1.9.0" "lightning-utilities<0.9"
+pip install "pytorch-lightning>=2.0"
 log_success "PyTorch Lightning installed"
 
 # =============================================================================
