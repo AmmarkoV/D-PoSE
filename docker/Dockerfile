@@ -58,6 +58,6 @@ WORKDIR /home/${user_name}/
 
 #RUN git config --global http.sslverify false
 #RUN cd /home/${user_name}/workspace && git clone git@github.com:FORTH-ICS-CVRL-HCCV/RGBToPoseDetect2D.git && cd RGBToPoseDetect2D && ./scripts/setup.sh
-RUN /home/${user_name}/workspace/scripts/setup.sh
+#RUN /home/${user_name}/workspace/scripts/setup.sh
 RUN echo "source /home/${user_name}/workspace/venv/bin/activate" >> /home/${user_name}/.bashrc
 
