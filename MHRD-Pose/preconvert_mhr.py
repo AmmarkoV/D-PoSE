@@ -55,7 +55,6 @@ def preconvert(dataset_name, options, cache_dir, batch_size, resume):
     logger.info(f"[{dataset_name}] Starting conversion → {cache_path}")
 
     # Import inside function so path setup is complete
-    from train.dataset.dataset import DatasetHMR as OriginalDatasetHMR
     from dataset_wrapper import DatasetHMR
 
     # Build dataset — use the wrapper so we can call _init_converter
@@ -85,11 +84,18 @@ def preconvert(dataset_name, options, cache_dir, batch_size, resume):
                 batch_transl = []
 
                 for j in range(i, end):
-                    # Use parent __getitem__ to avoid triggering on-the-fly conversion
-                    item = OriginalDatasetHMR.__getitem__(ds, j)
-                    batch_poses.append(item['pose'])
-                    batch_betas.append(item['betas'])
-                    batch_transl.append(item.get('transl', torch.zeros(3)))
+                    # Read SMPL params directly from dataset arrays — avoids
+                    # image loading (which fails when images aren't mounted /
+                    # aren't needed for parameter conversion).
+                    pose = torch.from_numpy(ds.pose_cam[j].copy()).float()
+                    betas = torch.from_numpy(ds.betas[j].copy()).float()
+                    if hasattr(ds, 'trans_cam'):
+                        transl = torch.from_numpy(ds.trans_cam[j].copy()).float()
+                    else:
+                        transl = torch.zeros(3)
+                    batch_poses.append(pose)
+                    batch_betas.append(betas)
+                    batch_transl.append(transl)
 
                 smpl_data = {
                     'pose':   torch.stack(batch_poses),    # [B, 165]
