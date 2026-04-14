@@ -214,6 +214,7 @@ pip install \
     opencv-python \
     Pillow \
     scipy \
+    scikit-learn \
     scikit-image \
     matplotlib \
     tqdm \
