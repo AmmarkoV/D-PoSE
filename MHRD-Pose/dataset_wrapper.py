@@ -107,7 +107,7 @@ class DatasetHMR(OriginalDatasetHMR):
 
             # Load MHR model
             from config import MHR_MODEL_PT
-            self.mhr_model = torch.load(MHR_MODEL_PT, map_location=self.device)
+            self.mhr_model = torch.load(MHR_MODEL_PT, map_location=self.device, weights_only=False)
 
             # Create converter
             self.converter = Conversion(

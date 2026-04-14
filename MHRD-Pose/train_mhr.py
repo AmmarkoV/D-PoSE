@@ -108,7 +108,7 @@ def train(hparams, fast_dev_run=False):
         ckpt = hparams.TRAINING.RESUME
 
         # Load state dict
-        ckpt_loaded = torch.load(ckpt)
+        ckpt_loaded = torch.load(ckpt, weights_only=False)
         ckpt_state_dict = ckpt_loaded['state_dict']
         model_state_dict = model.state_dict()
 
