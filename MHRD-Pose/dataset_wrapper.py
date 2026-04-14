@@ -104,7 +104,8 @@ class DatasetHMR(OriginalDatasetHMR):
                 gender='neutral',
                 use_pca=False,
                 flat_hand_mean=True,
-            ).to(self.device)
+                dtype=torch.float32,
+            ).cpu()  # explicit .cpu() — must not go to CUDA, runs in DataLoader workers
 
             # Load MHR model
             from config import MHR_MODEL_PT
@@ -146,12 +147,13 @@ class DatasetHMR(OriginalDatasetHMR):
         """
         batch_size = smpl_data['pose'].shape[0]
 
-        # Generate SMPLX mesh — converter runs on CPU, ensure inputs match
+        # Generate SMPLX mesh — move inputs to wherever smplx_model actually lives
+        smplx_device = next(self.smplx_model.parameters()).device
         smplx_output = self.smplx_model(
-            betas=smpl_data['betas'].cpu(),
-            body_pose=smpl_data['pose'][:, 3:66].cpu(),  # 21 joints × 3
-            global_orient=smpl_data['pose'][:, :3].cpu(),
-            transl=smpl_data['transl'].cpu() if smpl_data['transl'] is not None else None,
+            betas=smpl_data['betas'].to(smplx_device),
+            body_pose=smpl_data['pose'][:, 3:66].to(smplx_device),  # 21 joints × 3
+            global_orient=smpl_data['pose'][:, :3].to(smplx_device),
+            transl=smpl_data['transl'].to(smplx_device) if smpl_data['transl'] is not None else None,
         )
 
         smpl_vertices = smplx_output.vertices  # [N, 10475, 3]
