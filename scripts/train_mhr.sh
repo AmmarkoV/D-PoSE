@@ -79,6 +79,14 @@ done
 echo -e "${BLUE}Setting GPU to: $GPU${NC}"
 export CUDA_VISIBLE_DEVICES=$GPU
 
+# Preload conda's libstdc++ if needed (pymomentum requires GLIBCXX_3.4.31+
+# which is newer than the system libstdc++ in the Docker base image)
+CONDA_LIBSTDCXX="$(dirname "$SCRIPT_DIR")/miniforge3/envs/pymomentum_env/lib/libstdc++.so.6"
+if [ -f "${CONDA_LIBSTDCXX}" ]; then
+    export LD_PRELOAD="${CONDA_LIBSTDCXX}"
+    echo -e "${BLUE}Preloading ${CONDA_LIBSTDCXX} for pymomentum${NC}"
+fi
+
 # Source virtual environment if it exists
 if [ -d "${PROJECT_ROOT}/venv" ]; then
     echo -e "${BLUE}Activating virtual environment...${NC}"
