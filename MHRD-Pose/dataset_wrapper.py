@@ -176,14 +176,19 @@ class DatasetHMR(OriginalDatasetHMR):
 
         smpl_vertices = smplx_output.vertices  # [N, 10475, 3]
 
-        # Convert to MHR
-        result = self.converter.convert_smpl2mhr(
-            smpl_vertices=smpl_vertices,
-            single_identity=False,
-            is_tracking=False,
-            return_mhr_parameters=True,
-            return_mhr_meshes=True
-        )
+        # Convert to MHR.
+        # torch.enable_grad() is required because pytorch_fitting.py runs a
+        # gradient-based optimisation internally (loss.backward()).  PL wraps
+        # the validation/eval loop in torch.no_grad(), which disables the grad
+        # tape and makes loss.backward() raise "does not require grad".
+        with torch.enable_grad():
+            result = self.converter.convert_smpl2mhr(
+                smpl_vertices=smpl_vertices,
+                single_identity=False,
+                is_tracking=False,
+                return_mhr_parameters=True,
+                return_mhr_meshes=True
+            )
 
         mhr_params = result.result_parameters
         mhr_meshes = result.result_meshes
