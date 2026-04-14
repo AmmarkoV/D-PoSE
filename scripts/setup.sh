@@ -144,13 +144,22 @@ pip install --upgrade pip wheel setuptools pkgutil_resolve_name
 # =============================================================================
 # Install PyTorch
 # =============================================================================
-log_info "Installing PyTorch (tag: ${TORCH_CUDA_TAG})..."
-if [ "$TORCH_CUDA_TAG" = "cpu" ]; then
-    pip install --force-reinstall torch torchvision torchaudio
-else
-    pip install --force-reinstall torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/${TORCH_CUDA_TAG}"
+# PyTorch 2.7.x is required to match pymomentum==0.1.99 (built against pt27).
+# Using cu126 wheels which work with CUDA 12.6+ drivers.
+TORCH_VERSION="2.7.1"
+TORCH_PIP_TAG="${TORCH_CUDA_TAG}"
+# Map older CUDA tags to cu126 (minimum for torch 2.7 pip wheels)
+if [ "$TORCH_CUDA_TAG" = "cu118" ] || [ "$TORCH_CUDA_TAG" = "cu121" ] || [ "$TORCH_CUDA_TAG" = "cu124" ]; then
+    TORCH_PIP_TAG="cu126"
 fi
-log_success "PyTorch installed"
+log_info "Installing PyTorch ${TORCH_VERSION} (tag: ${TORCH_PIP_TAG})..."
+if [ "$TORCH_PIP_TAG" = "cpu" ]; then
+    pip install --force-reinstall "torch==${TORCH_VERSION}" torchvision torchaudio
+else
+    pip install --force-reinstall "torch==${TORCH_VERSION}+${TORCH_PIP_TAG}" torchvision torchaudio \
+        --index-url "https://download.pytorch.org/whl/${TORCH_PIP_TAG}"
+fi
+log_success "PyTorch ${TORCH_VERSION} installed"
 
 # =============================================================================
 # Install neural_renderer_pytorch (requires CUDA + nvcc to compile)
@@ -271,9 +280,14 @@ else
     log_warning "Miniforge already exists at ${MINIFORGE_DIR}"
 fi
 
-log_info "Creating conda env with Python 3.12 and pymomentum..."
-"${MINIFORGE_DIR}/bin/mamba" create -y -n pymomentum_env python=3.12 "pymomentum>=0.1.90" -c conda-forge || \
-    "${MINIFORGE_DIR}/bin/conda" create -y -n pymomentum_env python=3.12 "pymomentum>=0.1.90" -c conda-forge || {
+log_info "Creating conda env with Python 3.12 and pymomentum 0.1.99 (pt27 gpu build)..."
+# Pin to 0.1.99 and constrain pytorch to 2.7.x so the solver picks the pt27 gpu build.
+# This matches pip torch==2.7.1+cu126 in the venv. Without the pytorch constraint, conda
+# may resolve to a cpu or pt29 build which causes ABI undefined-symbol errors at runtime.
+"${MINIFORGE_DIR}/bin/mamba" create -y -n pymomentum_env python=3.12 \
+    "pymomentum==0.1.99" "pytorch>=2.7,<2.8" -c conda-forge || \
+    "${MINIFORGE_DIR}/bin/conda" create -y -n pymomentum_env python=3.12 \
+    "pymomentum==0.1.99" "pytorch>=2.7,<2.8" -c conda-forge || {
         log_warning "Failed to install pymomentum from conda-forge."
         log_warning "MHR on-the-fly conversion will not work without it."
     }
