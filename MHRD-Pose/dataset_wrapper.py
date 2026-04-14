@@ -112,13 +112,23 @@ class DatasetHMR(OriginalDatasetHMR):
                 dtype=torch.float32,
             ).cpu()  # explicit .cpu() — must not go to CUDA, runs in DataLoader workers
 
-            # Load MHR model
-            from config import MHR_MODEL_PT
-            self.mhr_model = torch.load(MHR_MODEL_PT, map_location=self.device, weights_only=False)
+            # Create MHR Python instance — Conversion needs .character attribute
+            # access which TorchScript RecursiveScriptModule does not expose.
+            # MHR.from_files() returns a proper Python nn.Module with .character.
+            from config import MHR_MODEL_DIR, MHR_LOD
+            import os as _os2
+            from pathlib import Path as _Path
+            _proj_root2 = _os2.path.dirname(_os2.path.dirname(_os2.path.abspath(__file__)))
+            _assets_path = _Path(_proj_root2) / MHR_MODEL_DIR
+            self.mhr_instance = MHR.from_files(
+                folder=_assets_path,
+                device=self.device,
+                lod=MHR_LOD,
+            )
 
             # Create converter
             self.converter = Conversion(
-                mhr_model=self.mhr_model,
+                mhr_model=self.mhr_instance,
                 smpl_model=self.smplx_model,
                 method="pytorch",
                 batch_size=64
