@@ -206,38 +206,38 @@ class MHRHMR(nn.Module):
             # Apply OneEuroFilter for temporal smoothing
             if self.one_euro_cam is None and self.use_one_euro:
                 self.one_euro_cam = OneEuroFilter(
-                    np.zeros_like(mhr_output['pred_cam'][0].cpu()),
-                    mhr_output['pred_cam'][0].cpu().numpy(),
+                    np.zeros_like(mhr_output['pred_cam'][0].detach().cpu()),
+                    mhr_output['pred_cam'][0].detach().cpu().numpy(),
                     min_cutoff=self.min_cutoff,
                     beta=self.beta
                 )
                 self.one_euro_pose = OneEuroFilter(
-                    np.zeros_like(mhr_output['pred_pose'][0].cpu()),
-                    mhr_output['pred_pose'][0].cpu().numpy(),
+                    np.zeros_like(mhr_output['pred_pose'][0].detach().cpu()),
+                    mhr_output['pred_pose'][0].detach().cpu().numpy(),
                     min_cutoff=self.min_cutoff,
                     beta=self.beta
                 )
                 self.one_euro_identity = OneEuroFilter(
-                    np.zeros_like(mhr_output['pred_identity'][0].cpu()),
-                    mhr_output['pred_identity'][0].cpu().numpy(),
+                    np.zeros_like(mhr_output['pred_identity'][0].detach().cpu()),
+                    mhr_output['pred_identity'][0].detach().cpu().numpy(),
                     min_cutoff=self.min_cutoff,
                     beta=self.beta
                 )
 
             if self.use_one_euro:
                 self.t += 1
-                t_pose = np.ones_like(mhr_output['pred_pose'][0].cpu()) * self.t
-                t_identity = np.ones_like(mhr_output['pred_identity'][0].cpu()) * self.t
-                t_cam = np.ones_like(mhr_output['pred_cam'][0].cpu()) * self.t
+                t_pose = np.ones_like(mhr_output['pred_pose'][0].detach().cpu()) * self.t
+                t_identity = np.ones_like(mhr_output['pred_identity'][0].detach().cpu()) * self.t
+                t_cam = np.ones_like(mhr_output['pred_cam'][0].detach().cpu()) * self.t
 
                 mhr_output['pred_cam'] = torch.tensor(
-                    self.one_euro_cam(t_cam, mhr_output['pred_cam'].cpu().numpy())
+                    self.one_euro_cam(t_cam, mhr_output['pred_cam'].detach().cpu().numpy())
                 ).cuda()
                 mhr_output['pred_pose'] = torch.tensor(
-                    self.one_euro_pose(t_pose, mhr_output['pred_pose'].cpu().numpy())
+                    self.one_euro_pose(t_pose, mhr_output['pred_pose'].detach().cpu().numpy())
                 ).cuda()
                 mhr_output['pred_identity'] = torch.tensor(
-                    self.one_euro_identity(t_identity, mhr_output['pred_identity'].cpu().numpy())
+                    self.one_euro_identity(t_identity, mhr_output['pred_identity'].detach().cpu().numpy())
                 ).cuda()
 
             # Forward through MHR head to get vertices and joints
