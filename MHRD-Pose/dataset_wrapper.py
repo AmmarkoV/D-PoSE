@@ -42,7 +42,7 @@ class DatasetHMR(OriginalDatasetHMR):
     """
 
     def __init__(self, options, dataset, is_train=True):
-        super().__init__(options, dataset, is_train)
+        super().__init__(options, dataset, is_train=is_train)
 
         self.dataset_name = dataset
         self.is_train = is_train
@@ -93,8 +93,9 @@ class DatasetHMR(OriginalDatasetHMR):
                 _sys.path.insert(0, _conv_dir)
             from conversion import Conversion
 
-            # Device
-            self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            # Use CPU for the converter — it runs in DataLoader workers and
+            # should not compete with the training model for GPU memory.
+            self.device = torch.device('cpu')
 
             # Load SMPLX model
             from train.core.config import SMPLX_MODEL_DIR
