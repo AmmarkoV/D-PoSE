@@ -152,6 +152,10 @@ class DatasetHMR(OriginalDatasetHMR):
         """
         batch_size = smpl_data['pose'].shape[0]
 
+        # Conversion.__init__ may have moved smplx_model to GPU internally;
+        # pin it back to CPU before every forward pass.
+        self.smplx_model = self.smplx_model.cpu()
+
         # Generate SMPLX mesh — converter is always on CPU
         smplx_output = self.smplx_model(
             betas=smpl_data['betas'].cpu(),
