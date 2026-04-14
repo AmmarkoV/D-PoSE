@@ -166,12 +166,21 @@ class DatasetHMR(OriginalDatasetHMR):
         # pin it back to CPU before every forward pass.
         self.smplx_model = self.smplx_model.cpu()
 
-        # Generate SMPLX mesh — converter is always on CPU
+        # Generate SMPLX mesh — converter is always on CPU.
+        # All optional pose/expression parameters must be passed explicitly for
+        # batch sizes > 1 because smplx registers defaults as batch-1 buffers
+        # that do not broadcast automatically.
         smplx_output = self.smplx_model(
             betas=smpl_data['betas'].cpu(),
-            body_pose=smpl_data['pose'][:, 3:66].cpu(),  # 21 joints × 3
+            body_pose=smpl_data['pose'][:, 3:66].cpu(),      # 21 joints × 3
             global_orient=smpl_data['pose'][:, :3].cpu(),
             transl=smpl_data['transl'].cpu() if smpl_data['transl'] is not None else None,
+            jaw_pose=torch.zeros(batch_size, 3),
+            leye_pose=torch.zeros(batch_size, 3),
+            reye_pose=torch.zeros(batch_size, 3),
+            left_hand_pose=torch.zeros(batch_size, 45),
+            right_hand_pose=torch.zeros(batch_size, 45),
+            expression=torch.zeros(batch_size, 10),
         )
 
         smpl_vertices = smplx_output.vertices  # [N, 10475, 3]
