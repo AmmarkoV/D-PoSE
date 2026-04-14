@@ -43,7 +43,7 @@ class MHRTrainer(pl.LightningModule):
         from config import MHR_MODEL_PT
 
         # Load MHR model
-        self.mhr_model = torch.load(MHR_MODEL_PT, map_location='cpu')
+        self.mhr_model = torch.load(MHR_MODEL_PT, map_location='cpu', weights_only=False)
         self.add_module('mhr_model', self.mhr_model)
 
         # Initialize MHR-based HMR model
