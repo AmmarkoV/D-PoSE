@@ -108,53 +108,46 @@ class MHRRegressor(nn.Module):
         # Add bbox info dimension
         input_dim = input_dim + 3
 
-        # Number of MHR skeleton joints (144 / 6 = 24 joints)
+        # Number of joints used for feature processing (first 24 of MHR skeleton)
         num_joints = NUM_MHR_SKELETON_JOINTS
 
-        # Input dimensions for each branch
-        # Following the original ReFit architecture but adapted for MHR
-        # Pose: Each joint gets 6D output, processed with multi-linear
-        pose_per_joint_input = input_dim + 6
-        # Shape: Global features + identity params
-        shape_input = input_dim * num_joints + NUM_IDENTITY_BLENDSHAPES
-        # Expression: Global features + expression params
-        expr_input = input_dim * num_joints + NUM_FACE_EXPRESSION_BLENDSHAPES
-        # Camera: Global features + cam params
-        cam_input = input_dim * num_joints + 3
+        # Flattened feature dimension: (C+3) * J
+        flat_dim = input_dim * num_joints
+
+        # Input dimensions for each branch.
+        # MHR lbs_model_params is a heterogeneous 204-D vector
+        # ([tx,ty,tz, rx,ry,rz, per-joint-angles..., scale-params...]), NOT
+        # per-joint-6D.  The pose branch therefore uses a flat MLP instead of
+        # the per-joint MultiLinear used for SMPL.
+        pose_input  = flat_dim + NUM_LBS_MODEL_PARAMS        # flat features + current pose
+        shape_input = flat_dim + NUM_IDENTITY_BLENDSHAPES
+        expr_input  = flat_dim + NUM_FACE_EXPRESSION_BLENDSHAPES
+        cam_input   = flat_dim + 3
 
         # Initialize with neutral values (MHR default pose)
-        # Identity coefficients: neutral body shape (zeros)
         init_identity = torch.zeros(NUM_IDENTITY_BLENDSHAPES).unsqueeze(0)
-        # Face expression coefficients: neutral expression (zeros)
-        init_expr = torch.zeros(NUM_FACE_EXPRESSION_BLENDSHAPES).unsqueeze(0)
-        # LBS model params: neutral pose (zeros)
-        init_pose = torch.zeros(NUM_LBS_MODEL_PARAMS).unsqueeze(0)
-        # Camera: default camera position [scale, tx, ty]
-        init_cam = torch.tensor([[1.0, 0.0, 0.0]])  # Shape: [1, 3]
+        init_expr     = torch.zeros(NUM_FACE_EXPRESSION_BLENDSHAPES).unsqueeze(0)
+        init_pose     = torch.zeros(NUM_LBS_MODEL_PARAMS).unsqueeze(0)
+        init_cam      = torch.tensor([[1.0, 0.0, 0.0]])
 
         self.register_buffer('init_identity', init_identity)
-        self.register_buffer('init_expr', init_expr)
-        self.register_buffer('init_pose', init_pose)
-        self.register_buffer('init_cam', init_cam)
+        self.register_buffer('init_expr',     init_expr)
+        self.register_buffer('init_pose',     init_pose)
+        self.register_buffer('init_cam',      init_cam)
 
-        # MLP layers for each branch
-        self.p = self._make_multilinear(num_layer, num_joints,
-                                         pose_per_joint_input, hidden_dim)
+        # MLP layers for each branch (all flat)
+        self.p = self._make_linear(num_layer, pose_input,  hidden_dim)
         self.s = self._make_linear(num_layer, shape_input, hidden_dim)
-        self.e = self._make_linear(num_layer, expr_input, hidden_dim)
-        self.c = self._make_linear(num_layer, cam_input, hidden_dim)
+        self.e = self._make_linear(num_layer, expr_input,  hidden_dim)
+        self.c = self._make_linear(num_layer, cam_input,   hidden_dim)
 
         # Output decoders
-        # Pose: 6D per joint, reshaped to flat 144
-        self.decpose = MultiLinear(num_joints, hidden_dim, 6)
-        # Shape: 45 identity blendshapes
-        self.decshape = nn.Linear(hidden_dim, NUM_IDENTITY_BLENDSHAPES)
-        # Expression: 72 face expression blendshapes
-        self.decexpr = nn.Linear(hidden_dim, NUM_FACE_EXPRESSION_BLENDSHAPES)
-        # Camera: 3 params
-        self.deccam = nn.Linear(hidden_dim, 3)
+        self.decpose  = nn.Linear(hidden_dim, NUM_LBS_MODEL_PARAMS)        # 204 flat
+        self.decshape = nn.Linear(hidden_dim, NUM_IDENTITY_BLENDSHAPES)    # 45
+        self.decexpr  = nn.Linear(hidden_dim, NUM_FACE_EXPRESSION_BLENDSHAPES)  # 72
+        self.deccam   = nn.Linear(hidden_dim, 3)
 
-        self.avgpool = nn.AdaptiveAvgPool2d((1))
+        self.avgpool   = nn.AdaptiveAvgPool2d((1))
         self.num_joints = num_joints
 
     def forward(self, hpose, hshape, hcam, bbox_info, depth_feats=None):
@@ -171,70 +164,52 @@ class MHRRegressor(nn.Module):
             Dictionary with MHR parameters:
             - pred_identity: [B, 45] identity blendshape coefficients
             - pred_expr: [B, 72] face expression coefficients
-            - pred_pose: [B, 144] LBS model parameters
+            - pred_pose: [B, 204] LBS model parameters (flat)
             - pred_cam: [B, 3] camera parameters
         """
         BN = hpose.shape[0]
 
         # Add bbox info to features (broadcast across joints)
-        hpose = torch.cat([hpose, bbox_info.unsqueeze(-1).repeat(1, 1, self.num_joints)], 1)
+        hpose  = torch.cat([hpose,  bbox_info.unsqueeze(-1).repeat(1, 1, self.num_joints)], 1)
         hshape = torch.cat([hshape, bbox_info.unsqueeze(-1).repeat(1, 1, self.num_joints)], 1)
-        hcam = torch.cat([hcam, bbox_info.unsqueeze(-1).repeat(1, 1, self.num_joints)], 1)
+        hcam   = torch.cat([hcam,   bbox_info.unsqueeze(-1).repeat(1, 1, self.num_joints)], 1)
 
         if depth_feats is not None:
             depth_feats = self.avgpool(depth_feats)
-            hpose = torch.cat([hpose, depth_feats.squeeze(-1).repeat(1, 1, self.num_joints)], 1)
+            hpose  = torch.cat([hpose,  depth_feats.squeeze(-1).repeat(1, 1, self.num_joints)], 1)
             hshape = torch.cat([hshape, depth_feats.squeeze(-1).repeat(1, 1, self.num_joints)], 1)
-            hcam = torch.cat([hcam, depth_feats.squeeze(-1).repeat(1, 1, self.num_joints)], 1)
+            hcam   = torch.cat([hcam,   depth_feats.squeeze(-1).repeat(1, 1, self.num_joints)], 1)
 
-        # Transpose for processing: [B, C, J] -> [B, J, C]
-        hpose = hpose.transpose(1, 2)
-        hshape = hshape.transpose(1, 2)
-        hcam = hcam.transpose(1, 2)
-
-        # Flatten spatial dimensions for shape/cam branches
+        # Flatten [B, C, J] → [B, C*J] for all branches
+        hpose_flat  = hpose.flatten(1)
         hshape_flat = hshape.flatten(1)
-        hcam_flat = hcam.flatten(1)
+        hcam_flat   = hcam.flatten(1)
 
         # Initialize predictions with neutral values
         pred_identity = self.init_identity.repeat(BN, 1)
-        pred_expr = self.init_expr.repeat(BN, 1)
-        pred_pose = self.init_pose.repeat(BN, 1)
-        pred_cam = self.init_cam.repeat(BN, 1)
+        pred_expr     = self.init_expr.repeat(BN, 1)
+        pred_pose     = self.init_pose.repeat(BN, 1)   # [B, 204]
+        pred_cam      = self.init_cam.repeat(BN, 1)
 
-        # Reshape pose for per-joint processing: [B, 144] -> [B, 24, 6]
-        pred_pose_reshaped = pred_pose.view(BN, self.num_joints, -1)
-
-        # Iteratively refine predictions
-        for i in range(1):
-            # Pose branch: concatenate per-joint features
-            pose_feats_pred = torch.cat([pred_pose_reshaped, hpose], 2)
-
-            # Shape branch: global features + current prediction
+        # Iteratively refine predictions (single iteration)
+        for _ in range(1):
+            # Pose branch: flat features + current pose estimate
+            pose_feats_pred  = torch.cat([pred_pose,     hpose_flat],  1)
             shape_feats_pred = torch.cat([pred_identity, hshape_flat], 1)
+            expr_feats_pred  = torch.cat([pred_expr,     hshape_flat], 1)
+            cam_feats_pred   = torch.cat([pred_cam,      hcam_flat],   1)
 
-            # Expression branch: global features + current prediction
-            expr_feats_pred = torch.cat([pred_expr, hshape_flat], 1)
-
-            # Camera branch: global features + current prediction
-            cam_feats_pred = torch.cat([pred_cam, hcam_flat], 1)
-
-            # Update predictions using residual connections
-            pose_update = self.decpose(self.p(pose_feats_pred))
-            pred_pose_reshaped = pred_pose_reshaped + pose_update
-
+            # Residual updates
+            pred_pose     = pred_pose     + self.decpose( self.p(pose_feats_pred))
             pred_identity = pred_identity + self.decshape(self.s(shape_feats_pred))
-            pred_expr = pred_expr + self.decexpr(self.e(expr_feats_pred))
-            pred_cam = pred_cam + self.deccam(self.c(cam_feats_pred))
-
-        # Flatten pose back to [B, 144]
-        pred_pose = pred_pose_reshaped.flatten(1)
+            pred_expr     = pred_expr     + self.decexpr( self.e(expr_feats_pred))
+            pred_cam      = pred_cam      + self.deccam(  self.c(cam_feats_pred))
 
         return {
             'pred_identity': pred_identity,    # [B, 45]
-            'pred_expr': pred_expr,            # [B, 72]
-            'pred_pose': pred_pose,            # [B, 144]
-            'pred_cam': pred_cam,              # [B, 3]
+            'pred_expr':     pred_expr,        # [B, 72]
+            'pred_pose':     pred_pose,        # [B, 204]
+            'pred_cam':      pred_cam,         # [B, 3]
         }
 
     def _make_linear(self, num, input_dim, hidden_dim):

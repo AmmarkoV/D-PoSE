@@ -93,10 +93,10 @@ class MHRHead(nn.Module):
         # Convert from centimeters to meters
         verts_m = verts_cm * self.cm_to_m
 
-        # Extract joint positions from skeleton state
-        # skel_state is [B, J, 16] containing 4x4 transformation matrices
-        # The translation is in columns 12-14 (indices 12, 13, 14)
-        joints3d_cm = skel_state[:, :, 12:15]  # [B, J, 3]
+        # Extract joint positions from skeleton state.
+        # skel_state is [B, 127, 8]: each joint stores [tx, ty, tz, qw, qx, qy, qz, 1]
+        # where the first 3 values are the global translation in centimetres.
+        joints3d_cm = skel_state[:, :, :3]  # [B, 127, 3]
         joints3d_m = joints3d_cm * self.cm_to_m
 
         # Compute camera translation from PARE-style camera params

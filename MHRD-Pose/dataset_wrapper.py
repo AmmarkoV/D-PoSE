@@ -209,7 +209,7 @@ class DatasetHMR(OriginalDatasetHMR):
         # Extract parameter tensors
         identity_coeffs  = mhr_params.get('identity_coeffs',  torch.zeros(batch_size, 45))
         face_expr_coeffs = mhr_params.get('face_expr_coeffs', torch.zeros(batch_size, 72))
-        lbs_model_params = mhr_params.get('lbs_model_params', torch.zeros(batch_size, 144))
+        lbs_model_params = mhr_params.get('lbs_model_params', torch.zeros(batch_size, 204))
 
         # Detach params — they were produced inside an enable_grad context but we
         # only need the values for caching / GT supervision, not for backprop here.
@@ -229,7 +229,7 @@ class DatasetHMR(OriginalDatasetHMR):
                 face_expr_coeffs=face_expr_coeffs.float(),
                 apply_correctives=False,
             )
-        joints3d = skel_state[:, :, 12:15].float() * 0.01  # cm → m, [N, J, 3]
+        joints3d = skel_state[:, :, :3].float() * 0.01  # cm → m, [N, 127, 3]
 
         return {
             'identity_coeffs': identity_coeffs,
@@ -285,12 +285,17 @@ class DatasetHMR(OriginalDatasetHMR):
             mhr_verts = mhr_data['vertices']
             mhr_joints = mhr_data['joints3d']
 
-        # Add MHR fields to item
+        # Add MHR fields to item.
+        # 'vertices' overwrites the SMPL vertices from the original dataset
+        # (18439 MHR verts vs ~6890 SMPL verts — must not mix them in the loss).
+        # 'joints3d_mhr' uses a separate key because the cached joints3d may have
+        # been generated with the old (buggy) skel_state extraction; once the cache
+        # is regenerated after this fix the key can be renamed to 'joints3d'.
         item['identity_coeffs'] = mhr_identity.squeeze(0)
         item['face_expr_coeffs'] = mhr_expr.squeeze(0)
         item['lbs_model_params'] = mhr_pose.squeeze(0)
-        item['vertices_mhr'] = mhr_verts.squeeze(0)
-        item['joints3d_mhr'] = mhr_joints.squeeze(0)
+        item['vertices'] = mhr_verts.squeeze(0)       # [V_mhr, 3] — overrides SMPL verts
+        item['joints3d_mhr'] = mhr_joints.squeeze(0)  # cached value may still be wrong
 
         return item
 

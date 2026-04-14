@@ -18,15 +18,17 @@ NUM_IDENTITY_BLENDSHAPES = 45
 NUM_FACE_EXPRESSION_BLENDSHAPES = 72
 
 # LBS (Linear Blend Skinning) model parameters
-# Structure: 144 parameters for rigid transforms and joint poses
-# This is the exact value from MHR character.parameter_transform.pose_parameters
-# The first 144 params are pose-related, followed by 45 identity + 72 expression blendshapes
-NUM_LBS_MODEL_PARAMS = 144
+# Structure: [tx(3), ry(3), rz(3), pose_angles(varying), scale(varying)] = 204 total
+# Verified by running mhr_model.pt (TorchScript) forward: only size 204 succeeds.
+# The MHR parameter_transform internally pads by identity(45) → 204+45=249 total.
+NUM_LBS_MODEL_PARAMS = 204
 
-# Total parameter transform size: 144 + 45 + 72 = 261
-NUM_TOTAL_PARAMS = 261
+# Total parameter transform size: 204 + 45 + 72 = 321
+NUM_TOTAL_PARAMS = 321
 
-# Number of skeleton joints in MHR (144 / 6 = 24 joints with 6D params each)
+# Number of skeleton joints in the full MHR skeleton (skel_state has 127 joints).
+# For loss computation we use only the first 24 joints of skel_state as a proxy
+# for major body joints (root, spine, limbs) — fingers/twist procs are beyond that.
 NUM_MHR_SKELETON_JOINTS = 24
 
 # MHR coordinate system uses centimeters (vs SMPL's meters)
