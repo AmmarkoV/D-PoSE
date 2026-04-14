@@ -70,9 +70,12 @@ class DatasetHMR(OriginalDatasetHMR):
         """Try to load cached MHR parameters."""
         if self.cache_file.exists():
             try:
-                cache_data = np.load(self.cache_file, allow_pickle=True)
                 logger.info(f"Loading MHR cache from {self.cache_file}")
-                return cache_data
+                cache_data = np.load(self.cache_file, allow_pickle=True)
+                # Eagerly materialise all arrays into a plain dict so the
+                # dataset object stays pickle-clean for spawn DataLoader workers.
+                # NpzFile holds an open BufferedReader which cannot be pickled.
+                return {k: cache_data[k] for k in cache_data.files}
             except Exception as e:
                 logger.warning(f"Failed to load cache: {e}")
                 return None
