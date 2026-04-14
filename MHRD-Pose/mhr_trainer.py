@@ -298,7 +298,10 @@ class MHRTrainer(pl.LightningModule):
             num_workers=self.hparams.DATASET.NUM_WORKERS,
             pin_memory=self.hparams.DATASET.PIN_MEMORY,
             shuffle=self.hparams.DATASET.SHUFFLE_TRAIN,
-            drop_last=True
+            drop_last=True,
+            # 'spawn' avoids "Cannot re-initialize CUDA in forked subprocess"
+            # when on-the-fly SMPL→MHR conversion runs in workers
+            multiprocessing_context='spawn' if self.hparams.DATASET.NUM_WORKERS > 0 else None,
         )
         return img_dataloader
 
@@ -327,7 +330,8 @@ class MHRTrainer(pl.LightningModule):
                     batch_size=self.hparams.DATASET.BATCH_SIZE,
                     shuffle=False,
                     num_workers=self.hparams.DATASET.NUM_WORKERS,
-                    drop_last=True
+                    drop_last=True,
+                    multiprocessing_context='spawn' if self.hparams.DATASET.NUM_WORKERS > 0 else None,
                 )
             )
         return dataloaders
