@@ -171,7 +171,7 @@ class DatasetHMR(OriginalDatasetHMR):
         # batch sizes > 1 because smplx registers defaults as batch-1 buffers
         # that do not broadcast automatically.
         smplx_output = self.smplx_model(
-            betas=smpl_data['betas'].cpu(),
+            betas=smpl_data['betas'].cpu()[:, :10],  # dataset pads to 11; smplx expects 10
             body_pose=smpl_data['pose'][:, 3:66].cpu(),      # 21 joints × 3
             global_orient=smpl_data['pose'][:, :3].cpu(),
             transl=smpl_data['transl'].cpu() if smpl_data['transl'] is not None else None,
