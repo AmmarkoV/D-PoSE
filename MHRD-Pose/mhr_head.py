@@ -112,7 +112,7 @@ class MHRHead(nn.Module):
 
         # Project 3D joints to 2D
         joints2d = perspective_projection(
-            joints3d=joints3d_m,
+            points=joints3d_m,
             rotation=torch.eye(3, device=device).unsqueeze(0).expand(batch_size, -1, -1),
             translation=cam_t,
             cam_intrinsics=cam_intrinsics,
