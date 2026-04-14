@@ -66,12 +66,19 @@ class MHRTrainer(pl.LightningModule):
         self.save_itr = 0
 
         # Renderer for visualization
-        # MHR has different faces than SMPLX
-        self.faces = self.mhr_model.character.mesh.faces
-        if isinstance(self.faces, torch.Tensor):
-            self.faces = self.faces.cpu().numpy()
+        # mhr_model is a TorchScript RecursiveScriptModule; .character is not
+        # accessible via __getattr__. Load faces from the portable dump instead.
+        import sys as _sys
+        _proj_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if _proj_root not in _sys.path:
+            _sys.path.insert(0, _proj_root)
+        from load_mhr_portable import load_portable
+        _portable = load_portable(os.path.join(_proj_root, 'mhr_portable_dump', 'mhr_dump_lod1.pt'))
+        _faces = _portable['interesting']['character.mesh.faces']
+        if isinstance(_faces, torch.Tensor):
+            self.faces = _faces.cpu().numpy()
         else:
-            self.faces = np.array(self.faces)
+            self.faces = np.array(_faces)
 
         self.renderer = Renderer(
             focal_length=self.hparams.DATASET.FOCAL_LENGTH,
