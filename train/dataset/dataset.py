@@ -447,6 +447,8 @@ class DatasetHMR(Dataset):
         except Exception as E:
             print(E)
             logger.info(f'@{imgname}@ from {self.dataset}')
+            index = index - 1 if index > 0 else index + 1
+            return self.__getitem__(index)
         if self.is_train and 'closeup' in self.dataset:
             cv_img = cv2.rotate(cv_img, cv2.ROTATE_90_CLOCKWISE)   
         
