@@ -11,6 +11,7 @@ Architecture:
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import numpy as np
 
 from mhr_regressor import MHRRegressor
@@ -185,8 +186,22 @@ class MHRHMR(nn.Module):
                         attention_cam_shape = self.attention(cam_shape_feat, segmentation[:, 1:, :, :], depth[:, 1:, :, :])
                         mhr_output = self.head(attention_pose, attention_cam_shape, attention_cam_shape, bbox_info, None)
             else:
+                # No-segmentation path.
+                # The depth decoder (UNET) was designed for HRNet-w48 channel
+                # sizes (branch4=384) and would fail for w32 (branch4=256).
+                # Depth is therefore skipped here; orig_depth/segmentation are
+                # set to None so the return statement below is still valid.
+                segmentation = None
+                orig_depth = None
                 features, _ = self.backbone(images)
-                mhr_output = self.head(features, bbox_info=bbox_info, depth_feats=None)
+                # features is a list of 4 multi-scale tensors from HRNet.
+                # features[0] has `width` channels (32 for hrnet_w32).
+                # Pool the spatial dimensions down to num_joints positions so
+                # the regressor receives [B, C, J] as it expects.
+                pose_feat = F.adaptive_avg_pool2d(
+                    features[0], (self.head.num_joints, 1)
+                ).squeeze(-1)  # [B, C, J]
+                mhr_output = self.head(pose_feat, pose_feat, pose_feat, bbox_info, depth_feats=None)
 
             # Apply OneEuroFilter for temporal smoothing
             if self.one_euro_cam is None and self.use_one_euro:
