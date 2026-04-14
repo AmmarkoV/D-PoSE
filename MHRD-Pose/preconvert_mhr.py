@@ -41,7 +41,7 @@ sys.path.insert(0, os.path.join(_PROJECT_ROOT, 'MHR'))
 from train.utils.train_utils import update_hparams
 
 
-def preconvert(dataset_name, options, cache_dir, batch_size, resume):
+def preconvert(dataset_name, options, cache_dir, batch_size, resume, is_train=True):
     """Convert a single dataset to MHR cache.
 
     Processes samples in batches and writes an .npz file under cache_dir.
@@ -58,7 +58,7 @@ def preconvert(dataset_name, options, cache_dir, batch_size, resume):
     from dataset_wrapper import DatasetHMR
 
     # Build dataset — use the wrapper so we can call _init_converter
-    ds = DatasetHMR(options, dataset_name, is_train=True)
+    ds = DatasetHMR(options, dataset_name, is_train=is_train)
     ds._init_converter()
     ds._converter_initialized = True
 
@@ -147,31 +147,36 @@ def main():
 
     hparams = update_hparams(args.cfg)
 
-    # Resolve datasets
+    # Resolve datasets — track train vs val to pass correct is_train flag
     if args.datasets:
-        datasets = args.datasets
+        # When specified manually, try train first, fall back to val
+        train_datasets = set(args.datasets)
+        val_datasets   = set()
     else:
-        train_ds = hparams.DATASET.DATASETS_AND_RATIOS.split('_')
-        val_ds   = hparams.DATASET.VAL_DS.split('_')
-        # deduplicate while preserving order
-        seen = set()
-        datasets = []
-        for d in train_ds + val_ds:
-            if d not in seen:
-                datasets.append(d)
-                seen.add(d)
+        train_datasets = set(hparams.DATASET.DATASETS_AND_RATIOS.split('_'))
+        val_datasets   = set(hparams.DATASET.VAL_DS.split('_'))
+
+    # deduplicate while preserving order: train first, then val-only
+    seen = set()
+    datasets = []
+    for d in list(train_datasets) + list(val_datasets):
+        if d not in seen:
+            datasets.append(d)
+            seen.add(d)
 
     # Resolve cache dir
     cache_dir = args.cache_dir or getattr(
         getattr(hparams, 'MHR', None), 'CACHE_DIR', 'data/mhr_cache'
     )
 
-    logger.info(f"Datasets to convert: {datasets}")
+    logger.info(f"Train datasets: {sorted(train_datasets)}")
+    logger.info(f"Val datasets:   {sorted(val_datasets)}")
     logger.info(f"Cache directory:     {cache_dir}")
     logger.info(f"Batch size:          {args.batch_size}")
 
     for ds_name in datasets:
-        preconvert(ds_name, hparams.DATASET, cache_dir, args.batch_size, args.resume)
+        is_train = ds_name not in val_datasets or ds_name in train_datasets
+        preconvert(ds_name, hparams.DATASET, cache_dir, args.batch_size, args.resume, is_train=is_train)
 
     logger.info("All datasets converted.")
 
