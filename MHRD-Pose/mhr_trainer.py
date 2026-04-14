@@ -64,6 +64,7 @@ class MHRTrainer(pl.LightningModule):
         self.val_ds = self.val_dataset()
 
         self.save_itr = 0
+        self._val_step_outputs = []  # accumulated by validation_step; read by on_validation_epoch_end
 
         # Renderer for visualization
         # mhr_model is a TorchScript RecursiveScriptModule; .character is not
@@ -219,10 +220,15 @@ class MHRTrainer(pl.LightningModule):
             loss_dict[ds_name + '_pampjpe'] = list(val_pampjpe[idxs])
             loss_dict[ds_name + '_pve'] = list(val_pve[idxs])
 
+        # Accumulate for on_validation_epoch_end (PL v2.0+ no longer passes outputs)
+        self._val_step_outputs.append(loss_dict)
         return loss_dict
 
-    def validation_epoch_end(self, outputs):
-        """Log validation metrics at end of epoch."""
+    def on_validation_epoch_end(self):
+        """Log validation metrics at end of epoch (PL v2.0+: no outputs arg)."""
+        outputs = self._val_step_outputs
+        self._val_step_outputs = []  # clear for next epoch
+
         logger.info(f'***** Epoch {self.current_epoch} *****')
         val_log = {}
 
@@ -264,8 +270,8 @@ class MHRTrainer(pl.LightningModule):
     def test_step(self, batch, batch_nb, dataloader_nb=0):
         return self.validation_step(batch, batch_nb, dataloader_nb)
 
-    def test_epoch_end(self, outputs):
-        return self.validation_epoch_end(outputs)
+    def on_test_epoch_end(self):
+        return self.on_validation_epoch_end()
 
     def configure_optimizers(self):
         """Configure optimizer for training."""
