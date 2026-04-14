@@ -146,12 +146,12 @@ class DatasetHMR(OriginalDatasetHMR):
         """
         batch_size = smpl_data['pose'].shape[0]
 
-        # Generate SMPLX mesh
+        # Generate SMPLX mesh — converter runs on CPU, ensure inputs match
         smplx_output = self.smplx_model(
-            betas=smpl_data['betas'],
-            body_pose=smpl_data['pose'][:, 3:66],  # 21 joints × 3
-            global_orient=smpl_data['pose'][:, :3],
-            transl=smpl_data['transl'],
+            betas=smpl_data['betas'].cpu(),
+            body_pose=smpl_data['pose'][:, 3:66].cpu(),  # 21 joints × 3
+            global_orient=smpl_data['pose'][:, :3].cpu(),
+            transl=smpl_data['transl'].cpu() if smpl_data['transl'] is not None else None,
         )
 
         smpl_vertices = smplx_output.vertices  # [N, 10475, 3]
