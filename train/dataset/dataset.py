@@ -445,10 +445,8 @@ class DatasetHMR(Dataset):
         try:
             cv_img = read_img(imgname)
         except Exception as E:
-            print(E)
-            logger.info(f'@{imgname}@ from {self.dataset}')
-            index = index - 1 if index > 0 else index + 1
-            return self.__getitem__(index)
+            logger.info(f'Failed to read @{imgname}@ from {self.dataset}: {E}')
+            cv_img = np.zeros((224, 224, 3), dtype=np.uint8)
         if self.is_train and 'closeup' in self.dataset:
             cv_img = cv2.rotate(cv_img, cv2.ROTATE_90_CLOCKWISE)   
         

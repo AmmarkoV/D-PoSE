@@ -77,7 +77,7 @@ def train(hparams, fast_dev_run=False):
         log_graph=False,
     )
     experiment_loggers.append(tb_logger)
-    experiment_loggers.append(wandb_logger)
+    # experiment_loggers.append(wandb_logger)
 
     # Create model
     model = MHRTrainer(hparams=hparams).to(device)
