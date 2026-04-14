@@ -510,14 +510,10 @@ class DatasetHMR(Dataset):
         except Exception as E:
             logger.info(f'@{imgname} from {self.dataset}')
             print(E)
+            img = np.zeros((3, self.options.IMG_RES, self.options.IMG_RES), dtype=np.float32)
+            item['depth'] = torch.zeros((1, self.options.DEPTH_MAP_SIZE, self.options.DEPTH_MAP_SIZE)).float()
 
-        try:
-            img = torch.from_numpy(img).float()
-        except Exception as E:
-            logger.info(f'@{imgname} from {self.dataset}')
-            print(E)
-            index = index - 1 if index > 0 else index + 1 
-            return self.__getitem__(index)
+        img = torch.from_numpy(img).float()
         item['img'] = self.normalize_img(img)
         item['pose'] = torch.from_numpy(pose).float()
         item['betas'] = torch.from_numpy(self.betas[index]).float()
