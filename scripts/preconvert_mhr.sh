@@ -42,6 +42,14 @@ fi
 
 export CUDA_VISIBLE_DEVICES="${GPU}"
 
+# Preload conda's libstdc++ if needed (pymomentum requires GLIBCXX_3.4.31+
+# which is newer than the system libstdc++ in the Docker base image)
+CONDA_LIBSTDCXX="${PROJECT_ROOT}/miniforge3/envs/pymomentum_env/lib/libstdc++.so.6"
+if [ -f "${CONDA_LIBSTDCXX}" ]; then
+    export LD_PRELOAD="${CONDA_LIBSTDCXX}"
+    echo "[INFO] Preloading ${CONDA_LIBSTDCXX} for pymomentum"
+fi
+
 echo "============================================="
 echo "  MHR Cache Pre-generation"
 echo "  Config:     ${CONFIG}"
