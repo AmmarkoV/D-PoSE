@@ -57,10 +57,12 @@ class DatasetHMR(OriginalDatasetHMR):
         # Try to load cached MHR parameters
         self.mhr_params_cached = self._try_load_cache()
 
+        # Converter is initialized lazily in each worker process (on first __getitem__
+        # call) so that the dataset object remains pickle-clean for spawn workers.
+        self._converter_initialized = False
+
         if self.mhr_params_cached is None:
             logger.info(f"No cache found for {dataset}, will convert on-the-fly")
-            # Initialize conversion components for on-the-fly conversion
-            self._init_converter()
         else:
             logger.info(f"Loaded cached MHR parameters for {dataset}")
 
@@ -261,6 +263,12 @@ class DatasetHMR(OriginalDatasetHMR):
 
     def _convert_single_sample(self, pose, betas, transl):
         """Convert single SMPL sample to MHR."""
+        # Lazy-initialize the converter in whichever process first needs it.
+        # This keeps the dataset pickle-clean for spawn-based DataLoader workers.
+        if not self._converter_initialized:
+            self._init_converter()
+            self._converter_initialized = True
+
         # Unsqueeze to batch
         smpl_data = {
             'pose': pose.unsqueeze(0),
