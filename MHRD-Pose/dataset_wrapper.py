@@ -181,44 +181,46 @@ class DatasetHMR(OriginalDatasetHMR):
         # gradient-based optimisation internally (loss.backward()).  PL wraps
         # the validation/eval loop in torch.no_grad(), which disables the grad
         # tape and makes loss.backward() raise "does not require grad".
+        # torch.enable_grad() is required: pytorch_fitting.py runs gradient-based
+        # optimisation internally; PL wraps eval loops in torch.no_grad() which
+        # kills the grad tape and makes loss.backward() raise "does not require grad".
         with torch.enable_grad():
             result = self.converter.convert_smpl2mhr(
                 smpl_vertices=smpl_vertices,
                 single_identity=False,
                 is_tracking=False,
                 return_mhr_parameters=True,
-                return_mhr_meshes=True
+                return_mhr_vertices=True,   # numpy [N, V, 3] in cm
+                return_mhr_meshes=False,
             )
 
-        mhr_params = result.result_parameters
-        mhr_meshes = result.result_meshes
+        mhr_params = result.result_parameters   # dict of tensors
+        mhr_verts_np = result.result_vertices   # numpy [N, V, 3] in cm
 
-        # Extract MHR parameters
-        # result_parameters structure:
-        # - identity_coeffs: [N, 45]
-        # - lbs_model_params: [N, 144]
-        # - face_expr_coeffs: [N, 72]
+        # Extract parameter tensors
+        identity_coeffs  = mhr_params.get('identity_coeffs',  torch.zeros(batch_size, 45))
+        face_expr_coeffs = mhr_params.get('face_expr_coeffs', torch.zeros(batch_size, 72))
+        lbs_model_params = mhr_params.get('lbs_model_params', torch.zeros(batch_size, 144))
 
-        identity_coeffs = mhr_params.get('identity_coeffs',
-                                         torch.zeros(batch_size, 45))
-        face_expr_coeffs = mhr_params.get('face_expr_coeffs',
-                                          torch.zeros(batch_size, 72))
-        lbs_model_params = mhr_params.get('lbs_model_params',
-                                          torch.zeros(batch_size, 144))
+        # Detach params — they were produced inside an enable_grad context but we
+        # only need the values for caching / GT supervision, not for backprop here.
+        identity_coeffs  = identity_coeffs.detach()
+        face_expr_coeffs = face_expr_coeffs.detach()
+        lbs_model_params = lbs_model_params.detach()
 
-        # Extract vertices and joints from mesh
-        vertices = mhr_meshes['vertices']  # [N, V, 3] in cm
-        skel_state = mhr_meshes.get('skel_state', None)
+        # Convert vertices from cm → m
+        vertices = torch.from_numpy(mhr_verts_np).float() * 0.01  # [N, V, 3]
 
-        # Convert cm to m
-        vertices = vertices * 0.01
-
-        # Extract joints from skeleton state
-        if skel_state is not None:
-            joints3d = skel_state[:, :, 12:15] * 0.01  # [N, J, 3]
-        else:
-            # Fallback: use vertex-based approximation
-            joints3d = torch.zeros(batch_size, 24, 3)
+        # Obtain joint positions via MHR forward → skel_state [N, J, 16]
+        # (4×4 column-major transforms; columns 12:15 are the translation).
+        with torch.no_grad():
+            _, skel_state = self.mhr_instance(
+                identity_coeffs=identity_coeffs.float(),
+                model_parameters=lbs_model_params.float(),
+                face_expr_coeffs=face_expr_coeffs.float(),
+                apply_correctives=False,
+            )
+        joints3d = skel_state[:, :, 12:15].float() * 0.01  # cm → m, [N, J, 3]
 
         return {
             'identity_coeffs': identity_coeffs,
