@@ -166,7 +166,8 @@ class MHRTrainer(pl.LightningModule):
 
         # Get ground truth joints and vertices
         gt_cam_vertices = batch.get('vertices', None)
-        gt_keypoints_3d = batch.get('joints3d', None)
+        # Prefer MHR skeleton joints; fall back to SMPL joints if not present
+        gt_keypoints_3d = batch.get('joints3d_mhr', batch.get('joints3d', None))
 
         if gt_keypoints_3d is not None:
             # Use first 24 joints (MHR skeleton joints)
