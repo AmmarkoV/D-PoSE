@@ -29,7 +29,7 @@ NUM_TOTAL_PARAMS = 321
 # Number of skeleton joints in the full MHR skeleton (skel_state has 127 joints).
 # For loss computation we use only the first 24 joints of skel_state as a proxy
 # for major body joints (root, spine, limbs) — fingers/twist procs are beyond that.
-NUM_MHR_SKELETON_JOINTS = 24
+NUM_MHR_SKELETON_JOINTS = 22
 
 # MHR coordinate system uses centimeters (vs SMPL's meters)
 CM_TO_M = 0.01

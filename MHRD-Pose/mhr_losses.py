@@ -14,6 +14,7 @@ from mhr_constants import (
     NUM_IDENTITY_BLENDSHAPES,
     NUM_FACE_EXPRESSION_BLENDSHAPES,
     NUM_LBS_MODEL_PARAMS,
+    NUM_MHR_SKELETON_JOINTS,
 )
 
 
@@ -165,8 +166,7 @@ class MHRLoss(nn.Module):
         self.identity_loss_weight = getattr(hparams.MODEL, 'IDENTITY_LOSS_WEIGHT', 1.0) if hparams else 1.0
         self.expr_loss_weight = getattr(hparams.MODEL, 'EXPR_LOSS_WEIGHT', 0.5) if hparams else 0.5
 
-        # Number of joints for MHR (from skeleton state)
-        self.num_joints = 24
+        self.num_joints = NUM_MHR_SKELETON_JOINTS
 
     def forward(self, pred, gt):
         """

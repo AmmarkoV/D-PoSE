@@ -75,7 +75,12 @@ class MHRHMR(nn.Module):
 
         # MHR-specific head components
         if hparams and hparams.TRIAL.bedlam_bbox:
-            self.head = MHRRegressor()
+            # Channel count of the upsampled HRNet feature map (all branches concatenated)
+            _backbone_channels = {'hrnet_w32': 480, 'hrnet_w48': 720}
+            _backbone_name = backbone.split('-')[0]
+            _feat_channels = _backbone_channels.get(_backbone_name, 480)
+            _use_depth = bool(hparams.DATASET.USE_DEPTH) if hparams else False
+            self.head = MHRRegressor(input_dim=_feat_channels, use_depth=_use_depth)
 
             if mhr_model is not None:
                 self.mhr_head = MHRHead(mhr_model, img_res=img_res)

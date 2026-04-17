@@ -102,11 +102,13 @@ class MHRRegressor(nn.Module):
         num_layer: Number of layers in the MLP
     """
 
-    def __init__(self, input_dim=32, hidden_dim=32, num_layer=1):
+    def __init__(self, input_dim=32, hidden_dim=1024, num_layer=1, use_depth=False):
         super(MHRRegressor, self).__init__()
 
-        # Add bbox info dimension
+        # Add bbox info dimension (and depth_feats channels if used)
         input_dim = input_dim + 3
+        if use_depth:
+            input_dim = input_dim + 48  # UNET intermediate features are 48 channels
 
         # Number of joints used for feature processing (first 24 of MHR skeleton)
         num_joints = NUM_MHR_SKELETON_JOINTS
