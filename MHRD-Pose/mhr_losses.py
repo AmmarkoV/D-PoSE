@@ -201,8 +201,11 @@ class MHRLoss(nn.Module):
         gt_identity = gt.get('identity_coeffs')
         gt_expr = gt.get('face_expr_coeffs')
         gt_pose = gt.get('lbs_model_params')
-        # Prefer MHR skeleton joints; fall back to SMPL joints if not present
+        # Prefer MHR skeleton joints; fall back to SMPL joints if not present.
+        # Guard against cached joints3d_mhr with wrong shape (e.g. size 0 at last dim).
         gt_joints = gt.get('joints3d_mhr', gt.get('joints3d'))
+        if gt_joints is not None and (gt_joints.ndim != 3 or gt_joints.shape[-1] < 3):
+            gt_joints = gt.get('joints3d')  # fall back to SMPL joints
         gt_vertices = gt.get('vertices')
 
         # Compute image size for scaling

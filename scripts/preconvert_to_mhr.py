@@ -152,31 +152,45 @@ def convert_dataset(dataset_name, converter, batch_size, device):
             )
             smpl_vertices = smplx_output.vertices
 
-        # Convert to MHR
+        # Convert to MHR — request vertices via return_mhr_vertices (numpy array)
+        # result.result_meshes is a list of trimesh objects with no skel_state;
+        # run a second forward pass to get skel_state for joint positions.
         result = converter.convert_smpl2mhr(
             smpl_vertices=smpl_vertices,
             single_identity=False,
             is_tracking=False,
             return_mhr_parameters=True,
-            return_mhr_meshes=True
+            return_mhr_vertices=True,
         )
 
         mhr_params = result.result_parameters
-        mhr_meshes = result.result_meshes
 
         # Extract parameters
         identity = mhr_params.get('identity_coeffs', torch.zeros(batch_size_actual, 45))
         expr = mhr_params.get('face_expr_coeffs', torch.zeros(batch_size_actual, 72))
         pose = mhr_params.get('lbs_model_params', torch.zeros(batch_size_actual, 144))
 
-        # Extract vertices and joints
-        verts = mhr_meshes['vertices'] * 0.01  # cm to m
-        skel_state = mhr_meshes.get('skel_state', None)
+        # Vertices from result_vertices (numpy [N, V, 3] in cm)
+        verts = torch.from_numpy(result.result_vertices).float() * 0.01  # cm to m
 
-        if skel_state is not None:
-            joints = skel_state[:, :, 12:15] * 0.01  # cm to m
+        # Joint positions: run MHR forward to get skel_state
+        with torch.no_grad():
+            _, skel_state = converter._mhr_model(
+                identity_coeffs=identity.float().to(device),
+                model_parameters=pose.float().to(device),
+                face_expr_coeffs=expr.float().to(device),
+                apply_correctives=False,
+            )
+        # Extract translations from skel_state (handles 8-elem and 16-elem formats)
+        skel = skel_state.cpu().float()
+        if skel.ndim == 4 and skel.shape[-2:] == (4, 4):
+            joints = skel[:, :, :3, 3] * 0.01
+        elif skel.ndim == 3 and skel.shape[-1] >= 16:
+            joints = skel[:, :, 12:15] * 0.01
+        elif skel.ndim == 3 and skel.shape[-1] >= 3:
+            joints = skel[:, :, :3] * 0.01
         else:
-            joints = torch.zeros(batch_size_actual, 24, 3)
+            joints = torch.zeros(batch_size_actual, skel.shape[1] if skel.ndim >= 2 else 24, 3)
 
         # Store
         all_identity.append(identity.cpu().numpy())

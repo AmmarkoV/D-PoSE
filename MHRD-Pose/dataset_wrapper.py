@@ -17,6 +17,48 @@ from loguru import logger
 # Import original dataset
 from train.dataset.dataset import DatasetHMR as OriginalDatasetHMR
 
+_SKEL_STATE_FORMAT_LOGGED = False
+
+
+def _extract_joints_from_skel_state(skel_state: torch.Tensor) -> torch.Tensor:
+    """Extract joint world-space translations from MHR skeleton state.
+
+    MHR.from_files() may return skel_state in one of several formats:
+      - [N, J, 8]  — 8-element: [tx, ty, tz, qw, qx, qy, qz, 1], cm
+      - [N, J, 16] — column-major 4×4 flattened, translation at indices 12:15, cm
+      - [N, J, 4, 4] — 4×4 homogeneous matrices, translation at [:, :, :3, 3], cm
+
+    Returns [N, J, 3] joint translations in metres.
+    """
+    global _SKEL_STATE_FORMAT_LOGGED
+    if not _SKEL_STATE_FORMAT_LOGGED:
+        logger.info(f"skel_state shape={skel_state.shape} dtype={skel_state.dtype}")
+        _SKEL_STATE_FORMAT_LOGGED = True
+
+    if skel_state.ndim == 4 and skel_state.shape[-2] == 4 and skel_state.shape[-1] == 4:
+        # [N, J, 4, 4] — homogeneous matrix; translation is last column first 3 rows
+        return skel_state[:, :, :3, 3].float() * 0.01
+    elif skel_state.ndim == 3:
+        last = skel_state.shape[-1]
+        if last >= 16:
+            # Column-major 4×4 flattened: translation at indices 12, 13, 14
+            return skel_state[:, :, 12:15].float() * 0.01
+        elif last >= 3:
+            # 8-element compact: [tx, ty, tz, ...]
+            return skel_state[:, :, :3].float() * 0.01
+        else:
+            logger.warning(
+                f"skel_state last dim too small ({last}); falling back to zero joints"
+            )
+            return torch.zeros(skel_state.shape[0], skel_state.shape[1], 3,
+                               dtype=torch.float32, device=skel_state.device)
+    else:
+        logger.warning(
+            f"Unknown skel_state format {skel_state.shape}; falling back to zero joints"
+        )
+        return torch.zeros(skel_state.shape[0], 127, 3,
+                           dtype=torch.float32, device=skel_state.device)
+
 
 class DatasetHMR(OriginalDatasetHMR):
     """Dataset wrapper that converts SMPL ground truth to MHR parameters.
@@ -220,8 +262,10 @@ class DatasetHMR(OriginalDatasetHMR):
         # Convert vertices from cm → m
         vertices = torch.from_numpy(mhr_verts_np).float() * 0.01  # [N, V, 3]
 
-        # Obtain joint positions via MHR forward → skel_state [N, J, 16]
-        # (4×4 column-major transforms; columns 12:15 are the translation).
+        # Obtain joint positions via MHR forward → skel_state.
+        # The skel_state format depends on whether MHR.from_files() returns
+        # 8-element [tx, ty, tz, qw, qx, qy, qz, 1] or 16-element column-major
+        # 4×4 transforms. We detect the format at runtime.
         with torch.no_grad():
             _, skel_state = self.mhr_instance(
                 identity_coeffs=identity_coeffs.float(),
@@ -229,7 +273,7 @@ class DatasetHMR(OriginalDatasetHMR):
                 face_expr_coeffs=face_expr_coeffs.float(),
                 apply_correctives=False,
             )
-        joints3d = skel_state[:, :, :3].float() * 0.01  # cm → m, [N, 127, 3]
+        joints3d = _extract_joints_from_skel_state(skel_state)
 
         return {
             'identity_coeffs': identity_coeffs,

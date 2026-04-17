@@ -166,8 +166,16 @@ class MHRTrainer(pl.LightningModule):
 
         # Get ground truth joints and vertices
         gt_cam_vertices = batch.get('vertices', None)
-        # Prefer MHR skeleton joints; fall back to SMPL joints if not present
+        # Prefer MHR skeleton joints; fall back to SMPL joints if not present.
+        # Guard against cached joints3d_mhr with wrong shape (e.g. size 0 at last dim).
         gt_keypoints_3d = batch.get('joints3d_mhr', batch.get('joints3d', None))
+        if gt_keypoints_3d is not None and (
+            gt_keypoints_3d.ndim != 3 or gt_keypoints_3d.shape[-1] < 3
+        ):
+            logger.warning(
+                f"joints3d_mhr has unexpected shape {gt_keypoints_3d.shape}; skipping 3D eval"
+            )
+            gt_keypoints_3d = None
 
         if gt_keypoints_3d is not None:
             # Use first 24 joints (MHR skeleton joints)
