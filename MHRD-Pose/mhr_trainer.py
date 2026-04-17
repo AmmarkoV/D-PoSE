@@ -129,6 +129,10 @@ class MHRTrainer(pl.LightningModule):
         for k, v in loss_dict.items():
             self.log(k, v, logger=True, sync_dist=True)
 
+        if batch_nb % 200 == 0:
+            loss_summary = {k.split('/')[-1]: f'{v.item():.4f}' for k, v in loss_dict.items()}
+            logger.info(f'Epoch {self.current_epoch} batch {batch_nb}: {loss_summary}')
+
         return {'loss': loss}
 
     def validation_step(self, batch, batch_nb, dataloader_nb=0, vis=False, save=True, mesh_save_dir=None):
