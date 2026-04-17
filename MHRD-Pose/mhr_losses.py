@@ -220,9 +220,11 @@ class MHRLoss(nn.Module):
         else:
             gt_keypoints_2d = gt['keypoints']
 
+        # GT keypoints may have more joints than pred (SMPL 24 vs MHR 22); align.
+        num_kp = pred_keypoints_2d.shape[1]
         loss_keypoints = projected_keypoint_loss(
             pred_keypoints_2d,
-            gt_keypoints_2d,
+            gt_keypoints_2d[:, :num_kp],
             criterion=criterion_noreduce,
         )
 
