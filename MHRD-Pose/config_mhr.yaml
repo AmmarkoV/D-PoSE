@@ -29,7 +29,7 @@ DATASET:
   proj_verts: False
   FOCAL_LENGTH: 5000
   USE_DEPTH: True
-  USE_DEPTH_CONC: True
+  USE_DEPTH_CONC: False
   USE_SEGM: True
   USE_BG_DEPTH: False
   SUPERVISE_DEPTH: False
