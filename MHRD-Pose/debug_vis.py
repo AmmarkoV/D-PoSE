@@ -230,24 +230,21 @@ def main():
         if gt_verts is not None:
             gt_verts_np = to_numpy(gt_verts)  # [V, 3] in metres
 
-            # GT vertices are in MHR body-local space (origin ≈ root joint).
-            # The renderer places them at cam_t in camera space.
-            # Use the PARE weak-perspective formula with default scale (s=1, tx=ty=0)
-            # to get a depth that makes the body fill the crop:
-            #   tz = 2 * focal_length / (bbox_scale * 200)
-            # tx, ty encode the bbox-centre offset from the image centre:
-            #   cx = 2*(bbox_cx - img_w/2) / (s * bbox_height)
-            #   cy = 2*(bbox_cy - img_h/2) / (s * bbox_height)
+            # GT vertices are in MHR body-local space (origin at root).
+            # The renderer uses a 224x224 crop with principal point at [112,112].
+            # cam_t = [0, 0, tz] centers the body in the crop.
+            # tz uses the crop-scaled focal length so the body fills the bbox:
+            #   fl_crop = fl_full * (224 / bbox_height)
+            #   tz = 2 * fl_crop / 224 = 2 * fl_full / bbox_height
             bbox_height = bbox_scale * 200.0
-            tz = 2.0 * crop_focal / bbox_height
-            cx = 2.0 * (bbox_center[0] - img_w_full / 2.0) / bbox_height
-            cy = 2.0 * (bbox_center[1] - img_h_full / 2.0) / bbox_height
-            gt_cam_t_np = np.array([cx, cy, tz], dtype=np.float32)
-            print(f'  GT cam_t: {gt_cam_t_np}  (tz={tz:.2f}m)')
+            fl_crop = fl_val * (224.0 / bbox_height)
+            tz = 2.0 * fl_val / bbox_height
+            gt_cam_t_np = np.array([0.0, 0.0, tz], dtype=np.float32)
+            print(f'  GT cam_t: {gt_cam_t_np}  (tz={tz:.2f}m)  fl_crop={fl_crop:.0f}')
 
             try:
                 gt_render = render_mesh_on_image(
-                    renderer, gt_verts_np, gt_cam_t_np, img_crop, [crop_focal, crop_focal]
+                    renderer, gt_verts_np, gt_cam_t_np, img_crop, [fl_crop, fl_crop]
                 )
             except Exception as e:
                 print(f'  GT render failed: {e}')
