@@ -121,6 +121,25 @@ class MHRTrainer(pl.LightningModule):
         pred['depth'] = depth
         pred['part_segms'] = part_segms
 
+        # Compute GT SMPL joints from GT MHR vertices (same mapping as pred path)
+        # This gives differentiable 3D joint supervision since pred['joints3d_smpl']
+        # is differentiable and gt is a constant produced here under no_grad.
+        gt_verts = batch.get('vertices')
+        mhr_head = getattr(self.model, 'mhr_head', None)
+        if gt_verts is not None and mhr_head is not None and 'joints3d_smpl' in pred:
+            with torch.no_grad():
+                tv = mhr_head._smpl_tri_vids   # [6890, 3]
+                w = mhr_head._smpl_baryc        # [6890, 3]
+                gv0 = gt_verts[:, tv[:, 0]]
+                gv1 = gt_verts[:, tv[:, 1]]
+                gv2 = gt_verts[:, tv[:, 2]]
+                gt_smpl_v = (w[:, 0].unsqueeze(0).unsqueeze(-1) * gv0
+                           + w[:, 1].unsqueeze(0).unsqueeze(-1) * gv1
+                           + w[:, 2].unsqueeze(0).unsqueeze(-1) * gv2)
+                batch['joints3d'] = torch.einsum(
+                    'jv,bvd->bjd', mhr_head._smpl_J_reg, gt_smpl_v
+                )  # [B, 24, 3]
+
         # Compute loss
         loss, loss_dict = self.loss_fn(pred=pred, gt=batch)
 
