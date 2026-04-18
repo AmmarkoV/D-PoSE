@@ -144,7 +144,7 @@ def main():
     os.makedirs(args.out_dir, exist_ok=True)
 
     # ---- load config --------------------------------------------------------
-    from config import update_hparams
+    from train.utils.train_utils import update_hparams
     hparams = update_hparams(args.cfg)
 
     # ---- dataset ------------------------------------------------------------
