@@ -256,12 +256,28 @@ def main():
                     ty = (py - 112.0) * tz / fl_crop
 
             gt_cam_t_np = np.array([tx, ty, tz], dtype=np.float32)
-            print(f'  GT cam_t: {gt_cam_t_np}  (tz={tz:.2f}m)  fl_crop={fl_crop:.0f}')
+            # Diagnostics: expected pixel position (should match where pelvis was observed)
+            exp_px = 112.0 + fl_crop * tx / tz
+            exp_py = 112.0 + fl_crop * ty / tz
+            print(f'  GT verts centroid: {gt_verts_np.mean(axis=0).round(3)}')
+            if 'keypoints_orig' in item:
+                kp_dbg = to_numpy(item['keypoints_orig'])
+                for ji, jname in [(0, 'pelvis'), (1, 'L_hip'), (2, 'R_hip')]:
+                    if ji < kp_dbg.shape[0]:
+                        jx_c = (kp_dbg[ji, 0] - (bbox_center[0] - half)) / (2 * half) * 224.0
+                        jy_c = (kp_dbg[ji, 1] - (bbox_center[1] - half)) / (2 * half) * 224.0
+                        print(f'    kp_orig[{ji}] {jname}: full=({kp_dbg[ji,0]:.0f},{kp_dbg[ji,1]:.0f}) crop=({jx_c:.0f},{jy_c:.0f}) conf={kp_dbg[ji,2]:.2f}')
+            print(f'  GT cam_t: {gt_cam_t_np}  tz={tz:.2f}m  fl_crop={fl_crop:.0f}')
+            print(f'  Expected pelvis at crop px ({exp_px:.0f}, {exp_py:.0f})')
 
             try:
                 gt_render = render_mesh_on_image(
                     renderer, gt_verts_np, gt_cam_t_np, img_crop, [fl_crop, fl_crop]
                 )
+                # Draw crosshair at expected pelvis position for debugging
+                import cv2 as _cv2
+                _ep = (int(round(exp_px)), int(round(exp_py)))
+                _cv2.drawMarker(gt_render, _ep, (0, 255, 0), _cv2.MARKER_CROSS, 20, 2)
             except Exception as e:
                 print(f'  GT render failed: {e}')
                 import traceback; traceback.print_exc()
