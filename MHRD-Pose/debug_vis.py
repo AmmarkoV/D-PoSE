@@ -55,6 +55,13 @@ def parse_args():
 # Helpers
 # ---------------------------------------------------------------------------
 
+def to_numpy(x):
+    """Convert a torch.Tensor or numpy array to a numpy array."""
+    if isinstance(x, torch.Tensor):
+        return x.detach().cpu().numpy()
+    return np.array(x)
+
+
 def unnorm_image(img_tensor):
     """Convert a [3,H,W] normalised image tensor to a uint8 HxWx3 numpy array."""
     mean = np.array([0.485, 0.456, 0.406])
@@ -221,22 +228,13 @@ def main():
         gt_render = None
 
         if gt_verts is not None:
-            gt_verts_np = gt_verts.numpy()  # [V, 3] in metres
+            gt_verts_np = to_numpy(gt_verts)  # [V, 3] in metres
 
-            # Build a camera translation that places the GT mesh at the bbox centre.
-            # We reconstruct cam_t from the GT SMPL pelvis position so the mesh
-            # appears correctly on the crop image.
-            # For GT we don't have a PARE cam; instead use the GT joints to find
-            # the pelvis and compute a rough cam_t.
-            gt_joints3d = item.get('joints3d')   # [J, 3] SMPL joints in metres (camera space)
+            gt_joints3d = item.get('joints3d')
             if gt_joints3d is not None:
-                pel = (gt_joints3d[1] + gt_joints3d[2]) / 2.0   # pelvis
-                # The GT joints are in camera coordinates. cam_t = [tx, ty, tz]
-                # such that projected pelvis lands at bbox_center on the full image.
-                # We store them directly.
-                gt_pel_np = pel.numpy()
-                # Simple approximation: cam_t ≈ pelvis xyz in camera frame
-                gt_cam_t_np = gt_pel_np.copy()
+                gt_j = to_numpy(gt_joints3d)
+                pel = (gt_j[1] + gt_j[2]) / 2.0
+                gt_cam_t_np = pel.copy()
                 gt_cam_t_np[0] = -gt_cam_t_np[0]  # renderer flips x back
             else:
                 gt_cam_t_np = np.zeros(3, dtype=np.float32)
@@ -347,7 +345,7 @@ def main():
 
         # 5. GT keypoints_orig (full-image pixels → crop)
         if gt_kps_orig is not None:
-            kp_np = gt_kps_orig.numpy()
+            kp_np = to_numpy(gt_kps_orig)
             crop_xy = full_to_crop(kp_np[:, :2])
             conf = kp_np[:, 2]
             kp_img = draw_keypoints_on_image(img_crop, crop_xy, (80, 80, 255), radius=4, conf=conf)
@@ -357,7 +355,7 @@ def main():
 
         # 6. GT keypoints_norm ([-1,1] → crop)
         if gt_kps_norm is not None:
-            kp_np = gt_kps_norm.numpy()
+            kp_np = to_numpy(gt_kps_norm)
             crop_xy = unnorm_kps(kp_np)
             conf = kp_np[:, 2] if kp_np.shape[1] > 2 else None
             kp_img = draw_keypoints_on_image(img_crop, crop_xy, (80, 200, 80), radius=4, conf=conf)
@@ -367,7 +365,7 @@ def main():
 
         # 7. 3D joints scatter (pred red, GT blue)
         gt_joints3d_item = item.get('joints3d')
-        gt_joints3d_np = gt_joints3d_item.numpy() if gt_joints3d_item is not None else None
+        gt_joints3d_np = to_numpy(gt_joints3d_item) if gt_joints3d_item is not None else None
 
         ax3d = fig.add_subplot(1, n_cols, col + 1, projection='3d')
         plot_joints_3d(ax3d, pred_joints3d_np, gt_joints3d_np, title='3D joints\n(pelvis-centred)')
@@ -386,15 +384,15 @@ def main():
         if pred_joints3d_np is not None:
             print(f'  Pred joints3d range: {pred_joints3d_np.min():.3f} .. {pred_joints3d_np.max():.3f} m')
         if gt_verts is not None:
-            vn = gt_verts.numpy()
+            vn = to_numpy(gt_verts)
             print(f'  GT verts range: {vn.min():.3f} .. {vn.max():.3f} m')
         if gt_kps_orig is not None:
-            ko = gt_kps_orig.numpy()
+            ko = to_numpy(gt_kps_orig)
             print(f'  keypoints_orig xy range: x=[{ko[:,0].min():.0f},{ko[:,0].max():.0f}]  '
                   f'y=[{ko[:,1].min():.0f},{ko[:,1].max():.0f}]  '
                   f'conf_min={ko[:,2].min():.2f}')
         if gt_kps_norm is not None:
-            kn = gt_kps_norm.numpy()
+            kn = to_numpy(gt_kps_norm)
             print(f'  keypoints (norm) xy range: [{kn[:,0].min():.2f},{kn[:,0].max():.2f}]')
         if pred_kps2d_smpl is not None:
             print(f'  Pred kps2d_smpl range: x=[{pred_kps2d_smpl[:,0].min():.0f},{pred_kps2d_smpl[:,0].max():.0f}]  '
