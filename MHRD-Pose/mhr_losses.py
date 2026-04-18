@@ -246,8 +246,19 @@ class MHRLoss(nn.Module):
             criterion=criterion,
         )
 
-        # Compute 3D keypoint loss
-        if gt_joints is not None:
+        # Compute 3D keypoint loss using differentiable SMPL joints when available
+        gt_joints_smpl = gt.get('joints3d')
+        pred_joints_smpl = pred.get('joints3d_smpl')
+        if pred_joints_smpl is not None and gt_joints_smpl is not None:
+            # Pelvis-center both (average of left hip [1] and right hip [2])
+            pred_pel = (pred_joints_smpl[:, [1]] + pred_joints_smpl[:, [2]]) / 2.0
+            gt_pel = (gt_joints_smpl[:, [1]] + gt_joints_smpl[:, [2]]) / 2.0
+            loss_keypoints_3d = keypoint_3d_loss(
+                pred_joints_smpl - pred_pel,
+                (gt_joints_smpl - gt_pel)[:, :24],
+                criterion=criterion,
+            )
+        elif gt_joints is not None:
             loss_keypoints_3d = keypoint_3d_loss(
                 pred_joints,
                 gt_joints[:, :self.num_joints],

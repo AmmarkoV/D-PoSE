@@ -7,9 +7,26 @@ This module replaces SMPLXCamHead and provides:
 3. Skeleton state extraction for joint positions
 """
 
+import os
+import sys
+import types
+import pickle
 import torch
 import torch.nn as nn
 import numpy as np
+import scipy.sparse
+
+
+def _stub_chumpy():
+    if 'chumpy' not in sys.modules:
+        _c = types.ModuleType('chumpy')
+        _ch = types.ModuleType('chumpy.ch')
+        class _Ch: pass
+        _c.Ch = _Ch
+        _c.array = lambda *a, **k: None
+        _ch.Ch = _Ch
+        sys.modules['chumpy'] = _c
+        sys.modules['chumpy.ch'] = _ch
 
 
 class MHRHead(nn.Module):
@@ -44,6 +61,43 @@ class MHRHead(nn.Module):
         else:
             # Fallback - will be set later
             self.faces = None
+
+        # Load mhr2smpl mapping + SMPL J_regressor for differentiable joint computation
+        _proj_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if _proj_root not in sys.path:
+            sys.path.insert(0, _proj_root)
+
+        _mapping = np.load(os.path.join(_proj_root, 'assets', 'mhr2smpl_mapping.npz'))
+        _triangle_ids = _mapping['triangle_ids'].astype(np.int64)   # [6890]
+        _baryc = _mapping['baryc_coords'].astype(np.float32)        # [6890, 3]
+
+        from load_mhr_portable import load_portable
+        _portable = load_portable(
+            os.path.join(_proj_root, 'mhr_portable_dump', 'mhr_dump_lod1.pt')
+        )
+        _mhr_faces = _portable['interesting']['character.mesh.faces']
+        if isinstance(_mhr_faces, torch.Tensor):
+            _mhr_faces = _mhr_faces.cpu().numpy()
+        else:
+            _mhr_faces = np.array(_mhr_faces)
+        _tri_vids = _mhr_faces[_triangle_ids].astype(np.int64)      # [6890, 3]
+
+        _stub_chumpy()
+        _smpl_pkl = os.path.join(
+            _proj_root,
+            'data/body_models/SMPL_python_v.1.1.0/smpl/models/SMPL_NEUTRAL.pkl'
+        )
+        with open(_smpl_pkl, 'rb') as _f:
+            _smpl_data = pickle.load(_f, encoding='latin1')
+        _J_reg = _smpl_data['J_regressor']
+        if scipy.sparse.issparse(_J_reg):
+            _J_reg = np.array(_J_reg.todense()).astype(np.float32)
+        else:
+            _J_reg = np.array(_J_reg).astype(np.float32)            # [24, 6890]
+
+        self.register_buffer('_smpl_tri_vids', torch.tensor(_tri_vids, dtype=torch.long))
+        self.register_buffer('_smpl_baryc', torch.tensor(_baryc, dtype=torch.float32))
+        self.register_buffer('_smpl_J_reg', torch.tensor(_J_reg, dtype=torch.float32))
 
     def forward(self, identity_coeffs, lbs_model_params, face_expr_coeffs,
                 cam, cam_intrinsics, bbox_scale, bbox_center, img_w, img_h,
@@ -92,6 +146,16 @@ class MHRHead(nn.Module):
         # Convert from centimeters to meters
         verts_m = verts_cm * self.cm_to_m
 
+        # Compute SMPL joints from MHR vertices via barycentric interpolation (differentiable)
+        v0 = verts_m[:, self._smpl_tri_vids[:, 0]]  # [B, 6890, 3]
+        v1 = verts_m[:, self._smpl_tri_vids[:, 1]]
+        v2 = verts_m[:, self._smpl_tri_vids[:, 2]]
+        w = self._smpl_baryc  # [6890, 3]
+        smpl_verts = (w[:, 0].unsqueeze(0).unsqueeze(-1) * v0
+                      + w[:, 1].unsqueeze(0).unsqueeze(-1) * v1
+                      + w[:, 2].unsqueeze(0).unsqueeze(-1) * v2)  # [B, 6890, 3]
+        smpl_joints3d = torch.einsum('jv,bvd->bjd', self._smpl_J_reg, smpl_verts)  # [B, 24, 3]
+
         # Extract joint positions from skeleton state.
         # skel_state is [B, 127, 8]: each joint stores [tx, ty, tz, qw, qx, qy, qz, 1]
         # where the first 3 values are the global translation in centimetres.
@@ -123,6 +187,7 @@ class MHRHead(nn.Module):
         return {
             'vertices': verts_m,
             'joints3d': joints3d_m,
+            'joints3d_smpl': smpl_joints3d,
             'joints2d': joints2d,
             'pred_cam_t': cam_t,
             'skel_state': skel_state,

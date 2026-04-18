@@ -130,14 +130,10 @@ class MHRTrainer(pl.LightningModule):
             self.log(k, v, logger=True, sync_dist=True)
 
         if batch_nb == 0 and self.current_epoch == 0:
-            joints3d = pred.get('joints3d')
-            if joints3d is not None:
-                logger.info(f'joints3d.requires_grad={joints3d.requires_grad} '
-                            f'joints3d.grad_fn={joints3d.grad_fn}')
-            vertices = pred.get('vertices')
-            if vertices is not None:
-                logger.info(f'vertices.requires_grad={vertices.requires_grad} '
-                            f'vertices.grad_fn={vertices.grad_fn}')
+            for key in ('joints3d', 'joints3d_smpl', 'vertices'):
+                t = pred.get(key)
+                if t is not None:
+                    logger.info(f'{key}: requires_grad={t.requires_grad} grad_fn={t.grad_fn}')
 
         if batch_nb % 200 == 0:
             loss_summary = {k.split('/')[-1]: f'{v.item():.4f}' for k, v in loss_dict.items()}
@@ -180,41 +176,37 @@ class MHRTrainer(pl.LightningModule):
 
         # Get ground truth joints and vertices
         gt_cam_vertices = batch.get('vertices', None)
-        # Prefer MHR skeleton joints; fall back to SMPL joints if not present.
-        # Guard against cached joints3d_mhr with wrong shape (e.g. size 0 at last dim).
-        gt_keypoints_3d = batch.get('joints3d_mhr', batch.get('joints3d', None))
-        if gt_keypoints_3d is not None and (
-            gt_keypoints_3d.ndim != 3 or gt_keypoints_3d.shape[-1] < 3
-        ):
-            logger.warning(
-                f"joints3d_mhr has unexpected shape {gt_keypoints_3d.shape}; skipping 3D eval"
-            )
-            gt_keypoints_3d = None
 
-        if gt_keypoints_3d is not None:
-            # Use first 24 joints (MHR skeleton joints)
-            gt_keypoints_3d = gt_keypoints_3d[:, :NUM_MHR_SKELETON_JOINTS]
-            pred_keypoints_3d = pred['joints3d'][:, :NUM_MHR_SKELETON_JOINTS]
-
-            # Center at pelvis
-            gt_pelvis = (gt_keypoints_3d[:, [1], :] + gt_keypoints_3d[:, [2], :]) / 2.0
-            pred_pelvis = (pred_keypoints_3d[:, [1], :] + pred_keypoints_3d[:, [2], :]) / 2.0
-
-            pred_keypoints_3d = pred_keypoints_3d - pred_pelvis
-            pred_cam_vertices = pred_cam_vertices - pred_pelvis
-            gt_keypoints_3d = gt_keypoints_3d - gt_pelvis
-            gt_cam_vertices = gt_cam_vertices - gt_pelvis
+        # Prefer: pred SMPL joints (differentiable) vs GT SMPL joints
+        # Fall back to MHR skel_state joints vs GT MHR joints
+        pred_smpl = pred.get('joints3d_smpl')
+        gt_smpl = batch.get('joints3d')
+        if pred_smpl is not None and gt_smpl is not None and gt_smpl.ndim == 3 and gt_smpl.shape[-1] >= 3:
+            pred_keypoints_3d = pred_smpl[:, :24]
+            gt_keypoints_3d = gt_smpl[:, :24]
         else:
-            # Fallback: use available joints
-            gt_keypoints_3d = batch.get('joints', None)[:, :NUM_MHR_SKELETON_JOINTS]
+            gt_keypoints_3d = batch.get('joints3d_mhr', batch.get('joints3d', None))
+            if gt_keypoints_3d is not None and (
+                gt_keypoints_3d.ndim != 3 or gt_keypoints_3d.shape[-1] < 3
+            ):
+                logger.warning(
+                    f"joints3d has unexpected shape {gt_keypoints_3d.shape}; skipping 3D eval"
+                )
+                gt_keypoints_3d = None
+            if gt_keypoints_3d is not None:
+                gt_keypoints_3d = gt_keypoints_3d[:, :NUM_MHR_SKELETON_JOINTS]
+            else:
+                gt_keypoints_3d = batch.get('joints', None)[:, :NUM_MHR_SKELETON_JOINTS]
             pred_keypoints_3d = pred['joints3d'][:, :NUM_MHR_SKELETON_JOINTS]
 
-            gt_pelvis = (gt_keypoints_3d[:, [1], :] + gt_keypoints_3d[:, [2], :]) / 2.0
-            pred_pelvis = (pred_keypoints_3d[:, [1], :] + pred_keypoints_3d[:, [2], :]) / 2.0
-
-            pred_keypoints_3d = pred_keypoints_3d - pred_pelvis
-            pred_cam_vertices = pred_cam_vertices - pred_pelvis
-            gt_keypoints_3d = gt_keypoints_3d - gt_pelvis
+        # Pelvis-center
+        gt_pelvis = (gt_keypoints_3d[:, [1]] + gt_keypoints_3d[:, [2]]) / 2.0
+        pred_pelvis = (pred_keypoints_3d[:, [1]] + pred_keypoints_3d[:, [2]]) / 2.0
+        pred_keypoints_3d = pred_keypoints_3d - pred_pelvis
+        pred_cam_vertices = pred_cam_vertices - pred_pelvis
+        gt_keypoints_3d = gt_keypoints_3d - gt_pelvis
+        if gt_cam_vertices is not None:
+            gt_cam_vertices = gt_cam_vertices - gt_pelvis
 
         # Absolute error (MPJPE)
         error = torch.sqrt(((pred_keypoints_3d - gt_keypoints_3d) ** 2).sum(dim=-1)).cpu().numpy()
