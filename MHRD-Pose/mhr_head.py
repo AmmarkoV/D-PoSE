@@ -82,13 +82,12 @@ class MHRHead(nn.Module):
 
         # Forward through MHR model
         # MHR outputs vertices in centimeters
-        with torch.no_grad():
-            verts_cm, skel_state = self.mhr_model(
-                identity_coeffs=identity_coeffs,
-                model_parameters=lbs_model_params,
-                face_expr_coeffs=face_expr_coeffs,
-                apply_correctives=True
-            )
+        verts_cm, skel_state = self.mhr_model(
+            identity_coeffs=identity_coeffs,
+            model_parameters=lbs_model_params,
+            face_expr_coeffs=face_expr_coeffs,
+            apply_correctives=True
+        )
 
         # Convert from centimeters to meters
         verts_m = verts_cm * self.cm_to_m
