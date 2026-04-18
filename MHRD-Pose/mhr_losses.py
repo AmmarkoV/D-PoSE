@@ -194,7 +194,14 @@ class MHRLoss(nn.Module):
         pred_expr = pred['pred_expr']
         pred_pose = pred['pred_pose']
         pred_joints = pred['joints3d'][:, :self.num_joints]
-        pred_keypoints_2d = pred['joints2d'][:, :self.num_joints]
+        # Use SMPL-ordered 2D joints when available (added in mhr_head.py).
+        # joints2d_smpl is projected from smpl_joints3d whose 24-joint ordering
+        # (0=pelvis … 23=R-wrist) matches the GT keypoint annotations in
+        # BEDLAM/3DPW, making the 2D keypoint loss meaningful.
+        # Fall back to the 127-joint MHR skel_state projection only if the new
+        # key is absent (e.g. running against an older checkpoint or test path).
+        _joints2d_src = pred.get('joints2d_smpl', pred['joints2d'])
+        pred_keypoints_2d = _joints2d_src[:, :self.num_joints]
         pred_vertices = pred['vertices']
 
         # Extract ground truth

@@ -88,7 +88,11 @@ MODEL:
   BACKBONE: 'hrnet_w48-conv'
   SHAPE_LOSS_WEIGHT: 1.0
   JOINT_LOSS_WEIGHT: 10.0
-  KEYPOINT_LOSS_WEIGHT: 0.0
+  # 2D keypoint loss weight. Was 0.0 because pred joints2d used MHR-specific
+  # ordering that didn't match GT annotations. Now that joints2d_smpl uses
+  # standard SMPL ordering (matching BEDLAM/3DPW GT), this loss is the
+  # strongest training signal and should dominate early training.
+  KEYPOINT_LOSS_WEIGHT: 5.0
   POSE_LOSS_WEIGHT: 1.0
   BETA_LOSS_WEIGHT: 0.001
   IDENTITY_LOSS_WEIGHT: 0.1

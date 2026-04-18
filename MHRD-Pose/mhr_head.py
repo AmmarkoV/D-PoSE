@@ -182,22 +182,45 @@ class MHRHead(nn.Module):
             crop_res=self.img_res,
         )
 
-        # Project 3D joints to 2D
+        # Project MHR skel_state joints (all 127) to 2D.
+        # This is kept for backward-compat and visualization but its joint ordering
+        # is MHR-specific and does NOT match GT keypoint annotations in BEDLAM/3DPW,
+        # so it cannot be used directly for the supervised 2D keypoint loss.
+        _rot = torch.eye(3, device=device).unsqueeze(0).expand(batch_size, -1, -1)
         joints2d = perspective_projection(
             points=joints3d_m,
-            rotation=torch.eye(3, device=device).unsqueeze(0).expand(batch_size, -1, -1),
+            rotation=_rot,
+            translation=cam_t,
+            cam_intrinsics=cam_intrinsics,
+        )
+
+        # Project the 24 SMPL-mapped joints to 2D.
+        # smpl_joints3d was computed above via barycentric interpolation of MHR
+        # vertices using mhr2smpl_mapping.npz + SMPL J_regressor, so it carries
+        # gradients back through the MHR vertex computation.
+        # Crucially, these 24 joints follow the standard SMPL joint ordering
+        # (0=pelvis, 1=L-hip, 2=R-hip, …, 23=R-wrist), which matches the GT
+        # keypoint annotations stored in BEDLAM/3DPW batches. This makes
+        # joints2d_smpl the correct tensor to use in the 2D keypoint loss.
+        joints2d_smpl = perspective_projection(
+            points=smpl_joints3d,
+            rotation=_rot,
             translation=cam_t,
             cam_intrinsics=cam_intrinsics,
         )
 
         if normalize_joints2d:
             joints2d = joints2d / (self.img_res / 2.)
+            joints2d_smpl = joints2d_smpl / (self.img_res / 2.)
 
         return {
             'vertices': verts_m,
             'joints3d': joints3d_m,
             'joints3d_smpl': smpl_joints3d,
+            # joints2d uses MHR skel_state ordering (127 joints) — for viz only.
             'joints2d': joints2d,
+            # joints2d_smpl uses SMPL ordering (24 joints) — used in 2D keypoint loss.
+            'joints2d_smpl': joints2d_smpl,
             'pred_cam_t': cam_t,
             'skel_state': skel_state,
         }
