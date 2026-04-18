@@ -196,13 +196,26 @@ class MHRTrainer(pl.LightningModule):
         # Get ground truth joints and vertices
         gt_cam_vertices = batch.get('vertices', None)
 
-        # Prefer: pred SMPL joints (differentiable) vs GT SMPL joints
-        # Fall back to MHR skel_state joints vs GT MHR joints
+        # Use SMPL joints derived from MHR vertices — same metric as training.
+        # Compute GT SMPL joints from GT MHR vertices with the same mhr2smpl mapping.
         pred_smpl = pred.get('joints3d_smpl')
-        gt_smpl = batch.get('joints3d')
-        if pred_smpl is not None and gt_smpl is not None and gt_smpl.ndim == 3 and gt_smpl.shape[-1] >= 3:
+        mhr_head = getattr(self.model, 'mhr_head', None)
+        gt_verts_val = batch.get('vertices')
+        if pred_smpl is not None and mhr_head is not None and gt_verts_val is not None:
+            tv = mhr_head._smpl_tri_vids
+            w = mhr_head._smpl_baryc
+            gv0 = gt_verts_val[:, tv[:, 0]]
+            gv1 = gt_verts_val[:, tv[:, 1]]
+            gv2 = gt_verts_val[:, tv[:, 2]]
+            gt_smpl_joints = torch.einsum(
+                'jv,bvd->bjd',
+                mhr_head._smpl_J_reg,
+                (w[:, 0].unsqueeze(0).unsqueeze(-1) * gv0
+                 + w[:, 1].unsqueeze(0).unsqueeze(-1) * gv1
+                 + w[:, 2].unsqueeze(0).unsqueeze(-1) * gv2),
+            )
             pred_keypoints_3d = pred_smpl[:, :24]
-            gt_keypoints_3d = gt_smpl[:, :24]
+            gt_keypoints_3d = gt_smpl_joints[:, :24]
         else:
             gt_keypoints_3d = batch.get('joints3d_mhr', batch.get('joints3d', None))
             if gt_keypoints_3d is not None and (
