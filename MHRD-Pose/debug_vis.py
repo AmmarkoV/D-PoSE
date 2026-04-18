@@ -201,7 +201,8 @@ def main():
         img_h_full = float(item['orig_shape'][0])
         img_w_full = float(item['orig_shape'][1])
         bbox_scale = float(item['scale'])
-        bbox_center = item['center'].numpy()    # [2]
+        center = item['center']
+        bbox_center = center.numpy() if isinstance(center, torch.Tensor) else np.array(center)
 
         # Use per-sample focal length if available, else compute from image size
         if 'focal_length' in item:
