@@ -234,9 +234,16 @@ class MHRLoss(nn.Module):
             # the gradient path intact.
             pred_keypoints_2d = 2 * (pred_keypoints_2d / img_size) - 1
 
-            # GT does not require grad so in-place is safe here, but we use
-            # out-of-place too for symmetry and to avoid mutating the batch dict.
-            gt_keypoints_2d = 2 * (gt['keypoints_orig'] / img_size) - 1
+            # GT keypoints_orig is [B, J, 3]: (x, y, confidence). img_size is
+            # [B, 1, 2], so we can only normalize the xy channels; dividing the
+            # full [B,J,3] tensor would fail with a shape mismatch at dim 2.
+            # projected_keypoint_loss expects [..., -1] to be the confidence
+            # weight, so we reconstruct the 3-channel tensor after normalizing.
+            _gt_orig = gt['keypoints_orig']
+            gt_keypoints_2d = torch.cat([
+                2 * (_gt_orig[:, :, :2] / img_size) - 1,
+                _gt_orig[:, :, 2:3],
+            ], dim=-1)
         else:
             gt_keypoints_2d = gt['keypoints']
 
