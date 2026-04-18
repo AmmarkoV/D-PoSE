@@ -201,15 +201,18 @@ def main():
     else:
         _J_reg = np.array(_J_reg).astype(np.float32)  # [24, 6890]
 
-    def compute_smpl_pelvis(verts_m):
-        """Compute SMPL pelvis position (joint 0) from MHR vertices [V,3] in metres."""
+    def compute_smpl_joints(verts_m):
+        """Compute all 24 SMPL joints from MHR vertices [V,3] in metres."""
         v0 = verts_m[_smpl_tri_vids[:, 0]]
         v1 = verts_m[_smpl_tri_vids[:, 1]]
         v2 = verts_m[_smpl_tri_vids[:, 2]]
         smpl_verts = (_smpl_baryc[:, 0:1]*v0 + _smpl_baryc[:, 1:2]*v1
                       + _smpl_baryc[:, 2:3]*v2)  # [6890, 3]
-        smpl_joints = _J_reg @ smpl_verts  # [24, 3]
-        return smpl_joints[0]  # pelvis [3]
+        return _J_reg @ smpl_verts  # [24, 3]
+
+    def compute_smpl_pelvis(verts_m):
+        """Compute SMPL pelvis position (joint 0) from MHR vertices [V,3] in metres."""
+        return compute_smpl_joints(verts_m)[0]
 
     from train.utils.renderer import Renderer
     renderer = Renderer(
@@ -322,8 +325,33 @@ def main():
                 gt_render = render_mesh_on_image(
                     renderer, gt_verts_np, gt_cam_t_np, img_crop, [fl_crop, fl_crop]
                 )
-                # Draw crosshair at expected pelvis position for debugging
                 import cv2 as _cv2
+                # Project all 24 SMPL joints (pelvis-subtracted) onto the crop
+                # using the same pinhole formula as pyrender:
+                #   x_pix = cx + fl * cam_x / (-cam_z)
+                #   y_pix = cy + fl * cam_y / (-cam_z)
+                # where cam = world - cam_t, cam_z = z_world - tz (negative in front)
+                # and the renderer flips tx, so cam_x = x_world + tx_orig.
+                smpl_joints_pelvis = compute_smpl_joints(gt_verts_np)  # [24, 3], pelvis-centred
+                _tz = gt_cam_t_np[2]
+                _tx = gt_cam_t_np[0]
+                _ty = gt_cam_t_np[1]
+                for j3d in smpl_joints_pelvis:
+                    # Net projection formula accounting for renderer's 180°X mesh rotation
+                    # and tx-flip (renderer sets cam_t_x = -tx_orig).
+                    # The 180°X rotation maps (x,y,z)→(x,-y,-z); combined with the
+                    # camera at (-tx,ty,tz) and pyrender convention this gives:
+                    #   x_pix = cx + fl * (x + tx) / (z + tz)
+                    #   y_pix = cy + fl * (y + ty) / (z + tz)
+                    # (verified for pelvis at world-origin: gives px, py correctly)
+                    depth = j3d[2] + _tz   # ≈ tz for joints near z=0
+                    if depth <= 0:
+                        continue
+                    jx = int(round(112 + fl_crop * (j3d[0] + _tx) / depth))
+                    jy = int(round(112 + fl_crop * (j3d[1] + _ty) / depth))
+                    if 0 <= jx < 224 and 0 <= jy < 224:
+                        _cv2.circle(gt_render, (jx, jy), 3, (255, 255, 0), -1)
+                # Draw crosshair at expected pelvis position for debugging
                 _ep = (int(round(exp_px)), int(round(exp_py)))
                 _cv2.drawMarker(gt_render, _ep, (0, 255, 0), _cv2.MARKER_CROSS, 20, 2)
             except Exception as e:
