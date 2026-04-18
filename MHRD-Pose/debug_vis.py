@@ -171,6 +171,46 @@ def main():
     else:
         faces = np.array(_faces)
 
+    # ---- SMPL pelvis regressor (mirrors mhr_head.py) -------------------------
+    # Used to compute the SMPL pelvis position from GT MHR vertices so we can
+    # centre the mesh on the pelvis before rendering (MHR origin is at feet).
+    import types, pickle, scipy.sparse
+    _mapping = np.load(os.path.join(_ROOT, 'assets', 'mhr2smpl_mapping.npz'))
+    _smpl_tri_vids = np.array(_faces)[_mapping['triangle_ids'].astype(np.int64)]  # [6890, 3]
+    _smpl_baryc    = _mapping['baryc_coords'].astype(np.float32)                  # [6890, 3]
+    def _stub_chumpy():
+        if 'chumpy' not in sys.modules:
+            _c = types.ModuleType('chumpy')
+            _c.Ch = type('Ch', (), {})
+            _c.array = lambda *a, **k: None
+            sys.modules['chumpy'] = _c
+            sys.modules['chumpy.ch'] = types.ModuleType('chumpy.ch')
+            sys.modules['chumpy.ch'].Ch = _c.Ch
+    _saved_mods = {k: sys.modules.get(k) for k in ('chumpy', 'chumpy.ch')}
+    _stub_chumpy()
+    try:
+        with open(os.path.join(_ROOT, 'data/body_models/SMPL_python_v.1.1.0/smpl/models/SMPL_NEUTRAL.pkl'), 'rb') as _f:
+            _smpl_data = pickle.load(_f, encoding='latin1')
+    finally:
+        for _k, _v in _saved_mods.items():
+            if _v is None: sys.modules.pop(_k, None)
+            else: sys.modules[_k] = _v
+    _J_reg = _smpl_data['J_regressor']
+    if scipy.sparse.issparse(_J_reg):
+        _J_reg = np.array(_J_reg.todense()).astype(np.float32)
+    else:
+        _J_reg = np.array(_J_reg).astype(np.float32)  # [24, 6890]
+
+    def compute_smpl_pelvis(verts_m):
+        """Compute SMPL pelvis position (joint 0) from MHR vertices [V,3] in metres."""
+        v0 = verts_m[_smpl_tri_vids[:, 0]]
+        v1 = verts_m[_smpl_tri_vids[:, 1]]
+        v2 = verts_m[_smpl_tri_vids[:, 2]]
+        smpl_verts = (_smpl_baryc[:, 0:1]*v0 + _smpl_baryc[:, 1:2]*v1
+                      + _smpl_baryc[:, 2:3]*v2)  # [6890, 3]
+        smpl_joints = _J_reg @ smpl_verts  # [24, 3]
+        return smpl_joints[0]  # pelvis [3]
+
     from train.utils.renderer import Renderer
     renderer = Renderer(
         focal_length=hparams.DATASET.FOCAL_LENGTH,
@@ -229,6 +269,14 @@ def main():
 
         if gt_verts is not None:
             gt_verts_np = to_numpy(gt_verts)  # [V, 3] in metres
+
+            # MHR body has its origin at the feet, not the pelvis.
+            # Subtract the SMPL pelvis (joint 0) so the pelvis is at (0,0,0)
+            # before rendering — this matches the cam_t formula which assumes
+            # the body root is at the origin.
+            pelvis_3d = compute_smpl_pelvis(gt_verts_np)
+            gt_verts_np = gt_verts_np - pelvis_3d[np.newaxis]
+            print(f'  SMPL pelvis offset: {pelvis_3d.round(3)}')
 
             # GT vertices are in body-local space (pelvis at origin, Y-up).
             # Renderer applies 180° X-rotation + flips tx, with principal point at [112,112].
