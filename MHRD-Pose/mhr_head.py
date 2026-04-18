@@ -82,13 +82,22 @@ class MHRHead(nn.Module):
             _mhr_faces = np.array(_mhr_faces)
         _tri_vids = _mhr_faces[_triangle_ids].astype(np.int64)      # [6890, 3]
 
+        # Stub chumpy only for this pickle load, then restore original state
+        _saved = {k: sys.modules.get(k) for k in ('chumpy', 'chumpy.ch')}
         _stub_chumpy()
-        _smpl_pkl = os.path.join(
-            _proj_root,
-            'data/body_models/SMPL_python_v.1.1.0/smpl/models/SMPL_NEUTRAL.pkl'
-        )
-        with open(_smpl_pkl, 'rb') as _f:
-            _smpl_data = pickle.load(_f, encoding='latin1')
+        try:
+            _smpl_pkl = os.path.join(
+                _proj_root,
+                'data/body_models/SMPL_python_v.1.1.0/smpl/models/SMPL_NEUTRAL.pkl'
+            )
+            with open(_smpl_pkl, 'rb') as _f:
+                _smpl_data = pickle.load(_f, encoding='latin1')
+        finally:
+            for _k, _v in _saved.items():
+                if _v is None:
+                    sys.modules.pop(_k, None)
+                else:
+                    sys.modules[_k] = _v
         _J_reg = _smpl_data['J_regressor']
         if scipy.sparse.issparse(_J_reg):
             _J_reg = np.array(_J_reg.todense()).astype(np.float32)
