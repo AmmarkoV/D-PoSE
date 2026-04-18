@@ -220,10 +220,23 @@ class MHRLoss(nn.Module):
 
         # Compute 2D keypoint loss
         if self.hparams and self.hparams.TRIAL.bedlam_bbox:
-            # Use full image keypoints
-            pred_keypoints_2d[:, :, :2] = 2 * (pred_keypoints_2d[:, :, :2] / img_size) - 1
-            gt_keypoints_2d = gt['keypoints_orig']
-            gt_keypoints_2d[:, :, :2] = 2 * (gt_keypoints_2d[:, :, :2] / img_size) - 1
+            # Normalize to [-1, 1] using full image dimensions.
+            #
+            # IMPORTANT: use out-of-place arithmetic for pred_keypoints_2d.
+            # pred_keypoints_2d is a view of joints2d_smpl which has
+            # requires_grad=True. An in-place write (x[:,...] = ...) increments
+            # the tensor's version counter, causing PyTorch autograd to silently
+            # zero out the gradient on the backward pass. The loss value would
+            # still be computed correctly but no gradient would reach the network,
+            # so the 2D supervision would have zero effect and the reprojection
+            # loss would only increase as other losses push the params.
+            # Out-of-place creates a new node in the computation graph, keeping
+            # the gradient path intact.
+            pred_keypoints_2d = 2 * (pred_keypoints_2d / img_size) - 1
+
+            # GT does not require grad so in-place is safe here, but we use
+            # out-of-place too for symmetry and to avoid mutating the batch dict.
+            gt_keypoints_2d = 2 * (gt['keypoints_orig'] / img_size) - 1
         else:
             gt_keypoints_2d = gt['keypoints']
 
