@@ -247,7 +247,7 @@ def main():
 
             try:
                 gt_render = render_mesh_on_image(
-                    renderer, gt_verts_np, gt_cam_t_np, img_crop, crop_focal
+                    renderer, gt_verts_np, gt_cam_t_np, img_crop, [crop_focal, crop_focal]
                 )
             except Exception as e:
                 print(f'  GT render failed: {e}')
@@ -280,7 +280,7 @@ def main():
 
             try:
                 pred_render = render_mesh_on_image(
-                    renderer, pred_verts_np, pred_cam_t_np, img_crop, crop_focal
+                    renderer, pred_verts_np, pred_cam_t_np, img_crop, [crop_focal, crop_focal]
                 )
             except Exception as e:
                 print(f'  Pred render failed: {e}')
