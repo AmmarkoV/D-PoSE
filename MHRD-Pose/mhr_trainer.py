@@ -129,6 +129,16 @@ class MHRTrainer(pl.LightningModule):
         for k, v in loss_dict.items():
             self.log(k, v, logger=True, sync_dist=True)
 
+        if batch_nb == 0 and self.current_epoch == 0:
+            joints3d = pred.get('joints3d')
+            if joints3d is not None:
+                logger.info(f'joints3d.requires_grad={joints3d.requires_grad} '
+                            f'joints3d.grad_fn={joints3d.grad_fn}')
+            vertices = pred.get('vertices')
+            if vertices is not None:
+                logger.info(f'vertices.requires_grad={vertices.requires_grad} '
+                            f'vertices.grad_fn={vertices.grad_fn}')
+
         if batch_nb % 200 == 0:
             loss_summary = {k.split('/')[-1]: f'{v.item():.4f}' for k, v in loss_dict.items()}
             logger.info(f'Epoch {self.current_epoch} batch {batch_nb}: {loss_summary}')
