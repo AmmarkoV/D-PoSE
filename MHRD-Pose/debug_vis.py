@@ -281,6 +281,16 @@ def main():
             gt_verts_np = gt_verts_np - pelvis_3d[np.newaxis]
             print(f'  SMPL pelvis offset: {pelvis_3d.round(3)}')
 
+            # The MHR fitting zeros out global_orient, so cached GT vertices are
+            # in a canonical body frame (always facing forward). Apply the SMPL
+            # global_orient rotation to bring them into camera space so the mesh
+            # overlays the actual person in the image.
+            if 'pose' in item:
+                from scipy.spatial.transform import Rotation as _ScipyR
+                _go = to_numpy(item['pose'])[:3]  # axis-angle [3]
+                _rot = _ScipyR.from_rotvec(_go).as_matrix()  # [3, 3]
+                gt_verts_np = gt_verts_np @ _rot.T  # [V, 3]
+
             # GT vertices are in body-local space (pelvis at origin, Y-up).
             # Renderer applies 180° X-rotation + flips tx, with principal point at [112,112].
             # tz: from weak-perspective depth formula using full-image focal length.
