@@ -230,16 +230,32 @@ def main():
         if gt_verts is not None:
             gt_verts_np = to_numpy(gt_verts)  # [V, 3] in metres
 
-            # GT vertices are in MHR body-local space (origin at root).
-            # The renderer uses a 224x224 crop with principal point at [112,112].
-            # cam_t = [0, 0, tz] centers the body in the crop.
-            # tz uses the crop-scaled focal length so the body fills the bbox:
-            #   fl_crop = fl_full * (224 / bbox_height)
-            #   tz = 2 * fl_crop / 224 = 2 * fl_full / bbox_height
+            # GT vertices are in body-local space (pelvis at origin, Y-up).
+            # Renderer applies 180° X-rotation + flips tx, with principal point at [112,112].
+            # tz: from weak-perspective depth formula using full-image focal length.
+            # tx, ty: align the pelvis with its GT 2D position in the crop.
+            #   The renderer flips tx (tx *= -1) internally, so we pass tx as-is.
+            #   After flip + projection: x_pix = 112 + fl_crop * tx / tz
+            #                           y_pix = 112 + fl_crop * ty / tz
             bbox_height = bbox_scale * 200.0
             fl_crop = fl_val * (224.0 / bbox_height)
             tz = 2.0 * fl_val / bbox_height
-            gt_cam_t_np = np.array([0.0, 0.0, tz], dtype=np.float32)
+            half = bbox_scale * 100.0  # half bbox size in full-image pixels
+
+            # Use GT pelvis 2D position (mean of L-hip[1] and R-hip[2] in SMPL ordering)
+            # to compute tx, ty so the body root aligns with the actual person in the crop.
+            tx, ty = 0.0, 0.0
+            if 'keypoints_orig' in item:
+                kp_orig = to_numpy(item['keypoints_orig'])  # [J, 3]: x, y, conf
+                if kp_orig.shape[0] >= 3:
+                    pelvis_full = (kp_orig[1, :2] + kp_orig[2, :2]) / 2.0  # full-img px
+                    # Convert pelvis full-image position → crop pixel position
+                    px = (pelvis_full[0] - (bbox_center[0] - half)) / (2 * half) * 224.0
+                    py = (pelvis_full[1] - (bbox_center[1] - half)) / (2 * half) * 224.0
+                    tx = (px - 112.0) * tz / fl_crop
+                    ty = (py - 112.0) * tz / fl_crop
+
+            gt_cam_t_np = np.array([tx, ty, tz], dtype=np.float32)
             print(f'  GT cam_t: {gt_cam_t_np}  (tz={tz:.2f}m)  fl_crop={fl_crop:.0f}')
 
             try:
