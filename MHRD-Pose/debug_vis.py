@@ -192,7 +192,7 @@ def main():
                  for k, v in item.items()}
         # scalar fields that need a batch dim
         for k in ('scale', 'center', 'orig_shape', 'focal_length'):
-            if k in batch and batch[k].dim() == 1:
+            if k in batch and isinstance(batch[k], torch.Tensor) and batch[k].dim() == 1:
                 batch[k] = batch[k].unsqueeze(0)
 
         img_crop = unnorm_image(item['img'])   # HxWx3 uint8, the 224×224 crop
