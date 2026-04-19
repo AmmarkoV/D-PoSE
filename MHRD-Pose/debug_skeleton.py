@@ -174,7 +174,24 @@ def main():
 
     # ---- load MHR model ---------------------------------------------------
     from mhr_constants import MHR_MODEL_PT
-    mhr_model = torch.load(os.path.join(_ROOT, MHR_MODEL_PT), map_location='cpu', weights_only=False)
+    # Search for mhr_model.pt in common locations relative to the repo root
+    _candidates = [
+        os.path.join(_ROOT, MHR_MODEL_PT),                          # D-PoSE/mhr_model.pt
+        os.path.join(_ROOT, 'mhr', 'mhr_model.pt'),                 # D-PoSE/mhr/mhr_model.pt
+        os.path.join(_ROOT, 'MHR', 'mhr_model.pt'),                 # D-PoSE/MHR/mhr_model.pt
+        os.path.join(_ROOT, 'MHR', 'assets', 'mhr_model.pt'),       # D-PoSE/MHR/assets/mhr_model.pt
+    ]
+    _mhr_pt = None
+    for _c in _candidates:
+        if os.path.exists(_c):
+            _mhr_pt = _c
+            break
+    if _mhr_pt is None:
+        raise FileNotFoundError(
+            f"mhr_model.pt not found. Searched: {_candidates}\n"
+            f"_ROOT={_ROOT}"
+        )
+    mhr_model = torch.load(_mhr_pt, map_location='cpu', weights_only=False)
 
     # ---- load checkpoint (optional) ---------------------------------------
     model_trainer = None
