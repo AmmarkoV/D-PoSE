@@ -25,7 +25,7 @@ from mhr_constants import (
     NUM_IDENTITY_BLENDSHAPES,
     NUM_FACE_EXPRESSION_BLENDSHAPES,
     NUM_LBS_MODEL_PARAMS,
-    NUM_MHR_SKELETON_JOINTS,
+    NUM_REGRESSOR_FEATURE_JOINTS,
 )
 
 
@@ -110,8 +110,9 @@ class MHRRegressor(nn.Module):
         if use_depth:
             input_dim = input_dim + 48  # UNET intermediate features are 48 channels
 
-        # Number of joints used for feature processing (first 24 of MHR skeleton)
-        num_joints = NUM_MHR_SKELETON_JOINTS
+        # Feature-tensor J dim — fixed at 22 by the upstream HRNet/attention
+        # pretraining. NOT a semantic body-joint count.
+        num_joints = NUM_REGRESSOR_FEATURE_JOINTS
 
         # Flattened feature dimension: (C+3) * J
         flat_dim = input_dim * num_joints

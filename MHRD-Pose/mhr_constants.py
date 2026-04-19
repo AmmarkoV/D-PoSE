@@ -29,12 +29,18 @@ NUM_TOTAL_PARAMS = 321
 # Total number of joints in the MHR skeleton (full skel_state).
 NUM_MHR_JOINTS_TOTAL = 127
 
-# Number of body joints used downstream (matches SMPL's 24-joint body).
-# Used to size the joint-feature dimension of the regressor and to slice
-# mapped SMPL-ordered joints for loss/eval. Do NOT use this to index into the
-# raw 127-joint MHR skel_state directly — the first N MHR joints are foot/twist
-# procedurals, not body joints. Use MHR_TO_SMPL_JOINT_INDICES for that.
+# Number of body joints used for loss/eval (matches SMPL's 24-joint body).
+# Do NOT use this to index into the raw 127-joint MHR skel_state directly —
+# the first N MHR joints are foot/twist procedurals, not body joints. Use
+# MHR_TO_SMPL_JOINT_INDICES for that.
 NUM_MHR_SKELETON_JOINTS = 24
+
+# Architectural feature-tensor joint dim used by the regressor.
+# This is NOT a semantic body-joint count — it's the J axis of the [B, C, J]
+# pose-feature tensor produced by the upstream HRNet + attention head, which
+# was pretrained with a 22-joint convention (SMPL body minus 2 hands). Changing
+# this would break loading of the COCO-pretrained HRNet weights.
+NUM_REGRESSOR_FEATURE_JOINTS = 22
 
 # MHR coordinate system uses centimeters (vs SMPL's meters)
 CM_TO_M = 0.01
