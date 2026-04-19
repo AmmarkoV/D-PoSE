@@ -151,10 +151,31 @@ def main():
     parser.add_argument('--dataset', default='agora-bfh')
     parser.add_argument('--split', default='train')
     parser.add_argument('--cfg', default='config_mhr.yaml')
+    parser.add_argument('--gpu', type=int, default=0,
+                        help='CUDA device (0=auto, -1=auto with most free)')
     args = parser.parse_args()
 
     torch.manual_seed(0)
     np.random.seed(0)
+    torch.cuda.manual_seed(0)
+
+    # ---- select GPU -------------------------------------------------------
+    if args.gpu >= 0:
+        torch.cuda.set_device(args.gpu)
+        print(f'Using GPU {args.gpu}')
+        torch.cuda.empty_cache()
+    else:
+        # Auto-select GPU with most free memory
+        ng = torch.cuda.device_count()
+        if ng > 1:
+            frees = [torch.cuda.mem_get_info(i)[0] for i in range(ng)]
+            args.gpu = max(range(ng), key=lambda i: frees[i])
+            print(f'Auto-selected GPU {args.gpu} (free: {frees[args.gpu]/1024**3:.1f} GB)')
+            torch.cuda.set_device(args.gpu)
+            torch.cuda.empty_cache()
+        else:
+            args.gpu = 0
+            print(f'Using GPU {args.gpu} (single GPU)')
 
     # ---- load config & dataset -------------------------------------------
     from train.utils.train_utils import update_hparams
@@ -191,15 +212,17 @@ def main():
             f"mhr_model.pt not found. Searched: {_candidates}\n"
             f"_ROOT={_ROOT}"
         )
-    mhr_model = torch.load(_mhr_pt, map_location='cuda:0', weights_only=False)
-    mhr_model.cuda()
+    _dev = f'cuda:{args.gpu}'
+    mhr_model = torch.load(_mhr_pt, map_location=_dev, weights_only=False)
+    mhr_model.to(_dev)
+    mhr_model.eval()
 
     # ---- load checkpoint (optional) ---------------------------------------
     model_trainer = None
     if args.ckpt:
         from mhr_trainer import MHRTrainer
         model_trainer = MHRTrainer.load_from_checkpoint(args.ckpt, hparams=hparams)
-        model_trainer.eval().cuda()
+        model_trainer.eval().to(_dev)
         print(f'Loaded checkpoint: {args.ckpt}')
 
     # ---- per-sample diagnostics -------------------------------------------
@@ -243,9 +266,9 @@ def main():
         pose = to_numpy(item['lbs_model_params']).astype(np.float32)
         expr = to_numpy(item.get('face_expr_coeffs', np.zeros(72))).astype(np.float32)
 
-        mhr_identity = torch.from_numpy(identity).unsqueeze(0).cuda()
-        mhr_pose = torch.from_numpy(pose).unsqueeze(0).cuda()
-        mhr_expr = torch.from_numpy(expr).unsqueeze(0).cuda()
+        mhr_identity = torch.from_numpy(identity).unsqueeze(0).to(_dev)
+        mhr_pose = torch.from_numpy(pose).unsqueeze(0).to(_dev)
+        mhr_expr = torch.from_numpy(expr).unsqueeze(0).to(_dev)
 
         with torch.no_grad():
             verts_cm_out, skel_state = mhr_model(
@@ -303,7 +326,7 @@ def main():
 
         # ---- Model predictions (if checkpoint) ------------------------------
         if model_trainer is not None:
-            batch = {k: v.unsqueeze(0).cuda() if isinstance(v, torch.Tensor) else v
+            batch = {k: v.unsqueeze(0).to(_dev) if isinstance(v, torch.Tensor) else v
                      for k, v in item.items()}
             for k in ('scale', 'center', 'orig_shape', 'focal_length'):
                 if k in batch and isinstance(batch[k], torch.Tensor) and batch[k].dim() == 1:
