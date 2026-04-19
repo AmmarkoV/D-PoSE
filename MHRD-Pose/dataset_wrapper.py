@@ -132,8 +132,11 @@ class DatasetHMR(OriginalDatasetHMR):
         try:
             import smplx
             import sys
+            import os
             sys.path.append('../MHR/')
             sys.path.append('../')
+            cwd = os.getcwd()
+            print("Working Directory is ",cwd)
             from mhr.mhr import MHR
             #from mhr_hmr import MHRHMR
             # conversion.py uses local-relative imports so its directory must be on path
