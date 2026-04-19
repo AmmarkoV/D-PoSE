@@ -16,7 +16,7 @@ Output: debug_vis_out/sample_{i}.png  (one file per sample)
 """
 
 import os
-os.environ['PYOPENGL_PLATFORM'] = 'egl'
+os.environ['PYOPENGL_PLATFORM'] = 'osmesa' #'egl'
 
 import sys
 import argparse
