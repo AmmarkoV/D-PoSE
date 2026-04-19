@@ -20,16 +20,18 @@ CONFIG="${PROJECT_ROOT}/MHRD-Pose/config_mhr.yaml"
 GPU=0
 BATCH_SIZE=64
 RESUME_FLAG=""
+REGENERATE_FLAG=""
 EXTRA_ARGS=""
 
 # Parse args
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --config)  CONFIG="$2";           shift 2 ;;
-        --gpu)     GPU="$2";              shift 2 ;;
-        --batch_size) BATCH_SIZE="$2";    shift 2 ;;
-        --resume)  RESUME_FLAG="--resume"; shift ;;
-        *)         EXTRA_ARGS="$EXTRA_ARGS $1"; shift ;;
+        --config)     CONFIG="$2";                  shift 2 ;;
+        --gpu)        GPU="$2";                     shift 2 ;;
+        --batch_size) BATCH_SIZE="$2";              shift 2 ;;
+        --resume)     RESUME_FLAG="--resume";       shift ;;
+        --regenerate) REGENERATE_FLAG="--regenerate"; shift ;;
+        *)            EXTRA_ARGS="$EXTRA_ARGS $1";  shift ;;
     esac
 done
 
@@ -55,7 +57,8 @@ echo "  MHR Cache Pre-generation"
 echo "  Config:     ${CONFIG}"
 echo "  GPU:        ${GPU}"
 echo "  Batch size: ${BATCH_SIZE}"
-echo "  Resume:     ${RESUME_FLAG:-no}"
+echo "  Resume:     ${RESUME_FLAG:-no}
+  Regenerate: ${REGENERATE_FLAG:-no}"
 echo "============================================="
 echo ""
 
@@ -64,6 +67,7 @@ python MHRD-Pose/preconvert_mhr.py \
     --cfg "${CONFIG}" \
     --batch_size "${BATCH_SIZE}" \
     ${RESUME_FLAG} \
+    ${REGENERATE_FLAG} \
     ${EXTRA_ARGS}
 
 echo ""

@@ -141,8 +141,10 @@ def main():
                         help='Samples per conversion batch (default: 64)')
     parser.add_argument('--cache_dir',  type=str, default=None,
                         help='Output directory. Default: reads CACHE_DIR from config.')
-    parser.add_argument('--resume',     action='store_true',
+    parser.add_argument('--resume',      action='store_true',
                         help='Skip datasets whose cache already exists.')
+    parser.add_argument('--regenerate', action='store_true',
+                        help='Delete the cache directory before converting (forces full rebuild).')
     args = parser.parse_args()
 
     hparams = update_hparams(args.cfg)
@@ -168,6 +170,11 @@ def main():
     cache_dir = args.cache_dir or getattr(
         getattr(hparams, 'MHR', None), 'CACHE_DIR', 'data/mhr_cache'
     )
+
+    if args.regenerate and Path(cache_dir).exists():
+        import shutil
+        shutil.rmtree(cache_dir)
+        logger.info(f"Deleted cache directory: {cache_dir}")
 
     logger.info(f"Train datasets: {sorted(train_datasets)}")
     logger.info(f"Val datasets:   {sorted(val_datasets)}")
