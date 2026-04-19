@@ -212,17 +212,19 @@ class DatasetHMR(OriginalDatasetHMR):
         # All optional pose/expression parameters must be passed explicitly for
         # batch sizes > 1 because smplx registers defaults as batch-1 buffers
         # that do not broadcast automatically.
-        # Zero out global_orient and transl so targets are in canonical body
-        # frame. If we baked world orientation/translation into the target
-        # vertices, the fitter encodes them into lbs_model_params[:6]
-        # (root tx/ty/tz/rx/ry/rz) — but the network sees only a cropped,
-        # centered image and has no signal to recover absolute world pose.
-        # That component of the supervision is unlearnable and stalls training.
-        # World placement is handled separately by the camera head.
+        # Keep camera-space global_orient from pose_cam (first 3 values).
+        # pose_cam encodes the body's orientation relative to the camera
+        # (OpenCV Y-down convention), which is learnable from the image.
+        # Zero only transl — absolute 3D placement is unlearnable from a crop
+        # and is handled separately by the camera head (scale, tx, ty).
+        # Using zero global_orient would put the body in Y-up canonical space,
+        # breaking the 2D reprojection loss (v = fy*py/tz+cy projects head
+        # above the pelvis only when py < 0, i.e. Y-down) and flipping the
+        # rendered mesh upside-down.
         smplx_output = self.smplx_model(
             betas=smpl_data['betas'].cpu()[:, :10],  # dataset pads to 11; smplx expects 10
             body_pose=smpl_data['pose'][:, 3:66].cpu(),      # 21 joints × 3
-            global_orient=torch.zeros(batch_size, 3),
+            global_orient=smpl_data['pose'][:, :3].cpu(),    # camera-space body orientation
             transl=torch.zeros(batch_size, 3),
             jaw_pose=torch.zeros(batch_size, 3),
             leye_pose=torch.zeros(batch_size, 3),

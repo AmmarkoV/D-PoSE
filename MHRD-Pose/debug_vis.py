@@ -385,17 +385,14 @@ def run_visual_tests(args, hparams, ds, renderer, faces,
         cam_t_full = np.array([tx_full, ty_full, tz], np.float32)
         canvas = np.full((fh, fw, 3), 200, dtype=np.uint8)
 
-        # Temporarily resize renderer to full resolution
-        orig_w = renderer.renderer.viewport_width
-        orig_h = renderer.renderer.viewport_height
-        orig_cx = list(renderer.camera_center)
-        renderer.renderer = _pyrender.OffscreenRenderer(fw, fh, point_size=1.0)
-        renderer.camera_center = [fw // 2, fh // 2]
-        try:
-            full_render = render_mesh_on_image(renderer, v, cam_t_full, canvas, [fl_val, fl_val])
-        finally:
-            renderer.renderer = _pyrender.OffscreenRenderer(orig_w, orig_h, point_size=1.0)
-            renderer.camera_center = orig_cx
+        # Fresh renderer at full resolution (EGL contexts can't be resized)
+        from train.utils.renderer import Renderer as _RendererFI
+        _fi_r = _RendererFI(focal_length=fl_val, img_res=max(fh, fw),
+                             faces=faces, mesh_color='pinkish')
+        _fi_r.renderer = _pyrender.OffscreenRenderer(fw, fh, point_size=1.0)
+        _fi_r.camera_center = [fw // 2, fh // 2]
+        full_render = render_mesh_on_image(_fi_r, v, cam_t_full, canvas, [fl_val, fl_val])
+        del _fi_r
 
         # Also crop render for side-by-side comparison
         cam_t_crop = np.array([0., 0., tz], np.float32)
@@ -787,12 +784,12 @@ def main():
             gt_verts_np = gt_verts_np - pelvis_3d[np.newaxis]
             print(f'  SMPL pelvis offset: {pelvis_3d.round(3)}')
 
-            # Cached GT MHR vertices are now canonical (dataset_wrapper zeros
-            # global_orient + transl before SMPLX forward → fitter produces a
-            # canonical-frame mesh). The renderer's internal 180°X rotation
-            # flips Y-up to image-Y-down; no additional pose rotation needed.
+            # Cached GT MHR vertices are in camera space (Y-down, OpenCV convention).
+            # dataset_wrapper keeps global_orient from pose_cam (camera-space body
+            # orientation) and zeros only transl. The renderer's internal 180°X
+            # rotation converts Y-down → Y-up for pyrender, giving correct display.
 
-            # GT vertices are in camera-relative space (pelvis at origin, Y-up).
+            # GT vertices are in camera-relative space (pelvis at origin, Y-down).
             # Renderer applies 180° X-rotation + flips tx, with principal point at [112,112].
             # tz: from weak-perspective depth formula using full-image focal length.
             # tx, ty: align the pelvis with its GT 2D position in the crop.
@@ -886,17 +883,15 @@ def main():
                         _ty_fi = (_pf[1] - _fh / 2) * tz / fl_val
                 _cam_fi = np.array([_tx_fi, _ty_fi, tz], np.float32)
                 _canvas = np.full((_fh, _fw, 3), 200, dtype=np.uint8)
-                _orig_w = renderer.renderer.viewport_width
-                _orig_h = renderer.renderer.viewport_height
-                _orig_cx = list(renderer.camera_center)
-                renderer.renderer = _pyr.OffscreenRenderer(_fw, _fh, point_size=1.0)
-                renderer.camera_center = [_fw // 2, _fh // 2]
-                try:
-                    _full_render = render_mesh_on_image(
-                        renderer, _v_fi, _cam_fi, _canvas, [fl_val, fl_val])
-                finally:
-                    renderer.renderer = _pyr.OffscreenRenderer(_orig_w, _orig_h, point_size=1.0)
-                    renderer.camera_center = _orig_cx
+                # Fresh renderer — EGL contexts can't be resized
+                from train.utils.renderer import Renderer as _RendererFI2
+                _fi_r2 = _RendererFI2(focal_length=fl_val, img_res=max(_fh, _fw),
+                                      faces=faces, mesh_color='pinkish')
+                _fi_r2.renderer = _pyr.OffscreenRenderer(_fw, _fh, point_size=1.0)
+                _fi_r2.camera_center = [_fw // 2, _fh // 2]
+                _full_render = render_mesh_on_image(
+                    _fi_r2, _v_fi, _cam_fi, _canvas, [fl_val, fl_val])
+                del _fi_r2
                 _fi_path = os.path.join(args.out_dir,
                                         f'sample_{sample_idx:03d}_ds{ds_idx}_fullimg.png')
                 import cv2 as _cv2fi
