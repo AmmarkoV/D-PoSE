@@ -102,6 +102,7 @@ class DatasetHMR(OriginalDatasetHMR):
         # Converter is initialized lazily in each worker process (on first __getitem__
         # call) so that the dataset object remains pickle-clean for spawn workers.
         self._converter_initialized = False
+        self._converter_available = True
 
         if self.mhr_params_cached is None:
             logger.info(f"No cache found for {dataset}, will convert on-the-fly")
@@ -180,10 +181,11 @@ class DatasetHMR(OriginalDatasetHMR):
             )
 
             logger.info("SMPL→MHR converter initialized")
+            self._converter_available = True
 
         except ImportError as e:
-            logger.error(f"Failed to import conversion modules: {e}")
-            raise
+            logger.warning(f"Failed to import conversion modules: {e}")
+            self._converter_available = False
         except Exception as e:
             logger.error(f"Failed to initialize converter: {e}")
             raise
@@ -318,7 +320,6 @@ class DatasetHMR(OriginalDatasetHMR):
         smpl_betas = item['betas']  # [10]
         smpl_transl = item.get('transl', torch.zeros(3))  # [3]
 
-        # Check cache
         if self.mhr_params_cached is not None:
             # Load from cache
             try:
@@ -329,13 +330,21 @@ class DatasetHMR(OriginalDatasetHMR):
                 mhr_joints = self.mhr_params_cached['joints3d'][index:index+1]
             except KeyError:
                 # Cache missing some fields, fall back to on-the-fly
+                if not self._converter_available:
+                    logger.warning(
+                        f"Cache incomplete and converter unavailable "
+                        f"(mhr package not installed). Using raw SMPL data for index {index}."
+                    )
+                    item['vertices'] = item['vertices'].squeeze(0)
+                    # SMPL joints stay in joints3d
+                    return item
                 mhr_data = self._convert_single_sample(smpl_pose, smpl_betas, smpl_transl)
                 mhr_identity = mhr_data['identity_coeffs']
                 mhr_expr = mhr_data['face_expr_coeffs']
                 mhr_pose = mhr_data['lbs_model_params']
                 mhr_verts = mhr_data['vertices']
                 mhr_joints = mhr_data['joints3d']
-        else:
+        elif self._converter_available:
             # On-the-fly conversion
             mhr_data = self._convert_single_sample(smpl_pose, smpl_betas, smpl_transl)
             mhr_identity = mhr_data['identity_coeffs']
@@ -343,6 +352,13 @@ class DatasetHMR(OriginalDatasetHMR):
             mhr_pose = mhr_data['lbs_model_params']
             mhr_verts = mhr_data['vertices']
             mhr_joints = mhr_data['joints3d']
+        else:
+            logger.warning(
+                f"Converter unavailable (mhr package not installed). "
+                f"Using raw SMPL data for index {index}."
+            )
+            item['vertices'] = item['vertices'].squeeze(0)
+            return item
 
         # Add MHR fields to item.
         # 'vertices' overwrites the SMPL vertices from the original dataset
