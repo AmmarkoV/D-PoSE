@@ -18,7 +18,7 @@ else
     echo "[WARNING] No venv found at ${VENV_PATH} — using system Python"
 fi
 
-export CUDA_VISIBLE_DEVICES="${GPU}"
+export PYOPENGL_PLATFORM=osmesa
 
 # Preload conda's libstdc++ if needed (pymomentum requires GLIBCXX_3.4.31+
 # which is newer than the system libstdc++ in the Docker base image)
