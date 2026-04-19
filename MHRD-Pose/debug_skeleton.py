@@ -191,7 +191,8 @@ def main():
             f"mhr_model.pt not found. Searched: {_candidates}\n"
             f"_ROOT={_ROOT}"
         )
-    mhr_model = torch.load(_mhr_pt, map_location='cpu', weights_only=False)
+    mhr_model = torch.load(_mhr_pt, map_location='cuda:0', weights_only=False)
+    mhr_model.cuda()
 
     # ---- load checkpoint (optional) ---------------------------------------
     model_trainer = None
