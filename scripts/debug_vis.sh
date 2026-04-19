@@ -19,6 +19,7 @@ else
 fi
 
 export PYOPENGL_PLATFORM=osmesa
+export CUDA_VISIBLE_DEVICES="1"
 
 # Preload conda's libstdc++ if needed (pymomentum requires GLIBCXX_3.4.31+
 # which is newer than the system libstdc++ in the Docker base image)
