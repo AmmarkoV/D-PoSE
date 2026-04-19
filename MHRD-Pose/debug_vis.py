@@ -712,10 +712,50 @@ def run_visual_tests(args, hparams, ds, renderer, faces,
     test_03()
     test_04()
     test_05()
-    #test_06()
+    test_06()
     test_07()
     test_08()
     test_09()
+    """
+
+  File "/home/user/workspace/MHRD-Pose/debug_vis.py", line 1145, in <module>
+    main()
+  File "/home/user/workspace/MHRD-Pose/debug_vis.py", line 809, in main
+    run_visual_tests(args, hparams, ds, renderer, faces,
+  File "/home/user/workspace/MHRD-Pose/debug_vis.py", line 718, in run_visual_tests
+    test_09()
+  File "/home/user/workspace/MHRD-Pose/debug_vis.py", line 584, in test_09
+    rendered = _render(v, cam_t)
+               ^^^^^^^^^^^^^^^^^
+  File "/home/user/workspace/MHRD-Pose/debug_vis.py", line 321, in _render
+    return render_mesh_on_image(renderer, verts, cam_t.copy(), bg.copy(),
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/workspace/MHRD-Pose/debug_vis.py", line 100, in render_mesh_on_image
+    rendered = renderer(
+               ^^^^^^^^^
+  File "/home/user/workspace/train/utils/renderer.py", line 290, in __call__
+    color, rend_depth = self.renderer.render(scene, flags=pyrender.RenderFlags.RGBA)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/workspace/venv/lib/python3.12/site-packages/pyrender/offscreen.py", line 86, in render
+    self._platform.make_current()
+  File "/home/user/workspace/venv/lib/python3.12/site-packages/pyrender/platforms/egl.py", line 196, in make_current
+    assert eglMakeCurrent(
+           ^^^^^^^^^^^^^^^
+  File "/home/user/workspace/venv/lib/python3.12/site-packages/OpenGL/error.py", line 228, in glCheckError
+    raise GLError(
+OpenGL.error.GLError: GLError(
+        err = 12296,
+        baseOperation = eglMakeCurrent,
+        cArguments = (
+                <OpenGL._opaque.EGLDisplay_pointer object at 0x7f2b875a9c50>,
+                <OpenGL._opaque.EGLSurface_pointer object at 0x7f2b875924d0>,
+                <OpenGL._opaque.EGLSurface_pointer object at 0x7f2b875924d0>,
+                <OpenGL._opaque.EGLContext_pointer object at 0x7f2b875aa5d0>,
+        ),
+        result = 0
+)
+
+    """
     test_10()
     test_11()
 
