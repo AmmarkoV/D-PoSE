@@ -281,11 +281,10 @@ def main():
             gt_verts_np = gt_verts_np - pelvis_3d[np.newaxis]
             print(f'  SMPL pelvis offset: {pelvis_3d.round(3)}')
 
-            # Cached GT MHR vertices are produced by the SMPLX→MHR fitter with
-            # target SMPLX vertices that already had global_orient applied, so
-            # the fitter ends up baking the orientation into the body pose.
-            # Do NOT re-apply R_go here — the renderer's own 180°X flip is the
-            # only remaining transform needed.
+            # Cached GT MHR vertices are now canonical (dataset_wrapper zeros
+            # global_orient + transl before SMPLX forward → fitter produces a
+            # canonical-frame mesh). The renderer's internal 180°X rotation
+            # flips Y-up to image-Y-down; no additional pose rotation needed.
 
             # GT vertices are in camera-relative space (pelvis at origin, Y-up).
             # Renderer applies 180° X-rotation + flips tx, with principal point at [112,112].

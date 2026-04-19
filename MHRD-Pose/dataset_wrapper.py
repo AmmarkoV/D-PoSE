@@ -212,11 +212,18 @@ class DatasetHMR(OriginalDatasetHMR):
         # All optional pose/expression parameters must be passed explicitly for
         # batch sizes > 1 because smplx registers defaults as batch-1 buffers
         # that do not broadcast automatically.
+        # Zero out global_orient and transl so targets are in canonical body
+        # frame. If we baked world orientation/translation into the target
+        # vertices, the fitter encodes them into lbs_model_params[:6]
+        # (root tx/ty/tz/rx/ry/rz) — but the network sees only a cropped,
+        # centered image and has no signal to recover absolute world pose.
+        # That component of the supervision is unlearnable and stalls training.
+        # World placement is handled separately by the camera head.
         smplx_output = self.smplx_model(
             betas=smpl_data['betas'].cpu()[:, :10],  # dataset pads to 11; smplx expects 10
             body_pose=smpl_data['pose'][:, 3:66].cpu(),      # 21 joints × 3
-            global_orient=smpl_data['pose'][:, :3].cpu(),
-            transl=smpl_data['transl'].cpu() if smpl_data['transl'] is not None else None,
+            global_orient=torch.zeros(batch_size, 3),
+            transl=torch.zeros(batch_size, 3),
             jaw_pose=torch.zeros(batch_size, 3),
             leye_pose=torch.zeros(batch_size, 3),
             reye_pose=torch.zeros(batch_size, 3),
