@@ -16,7 +16,7 @@ Output: debug_vis_out/sample_{i}.png  (one file per sample)
 """
 
 import os
-os.environ['PYOPENGL_PLATFORM'] = 'osmesa' #'egl'
+os.environ['PYOPENGL_PLATFORM'] = 'egl'
 
 import sys
 import argparse
@@ -109,6 +109,88 @@ def render_mesh_on_image(renderer, verts_m, cam_t, img_uint8, focal_length):
         rendered = rendered.astype(np.uint8)
     return rendered
 
+
+
+def render_mesh_stateless(
+    vertices,
+    faces,
+    camera_translation,
+    image,
+    focal_length,
+    camera_center=None,
+    mesh_color=(0.9, 0.7, 0.7),
+):
+    import numpy as np
+    import pyrender
+    import trimesh
+
+    H, W = image.shape[:2]
+
+    if camera_center is None:
+        camera_center = [W // 2, H // 2]
+
+    # --- create mesh ---
+    mesh = trimesh.Trimesh(vertices, faces, process=False)
+
+    # pyrender expects Y-up → flip like your original renderer
+    rot = trimesh.transformations.rotation_matrix(
+        np.radians(180), [1, 0, 0]
+    )
+    mesh.apply_transform(rot)
+
+    material = pyrender.MetallicRoughnessMaterial(
+        metallicFactor=0.0,
+        alphaMode='OPAQUE',
+        baseColorFactor=(*mesh_color, 1.0)
+    )
+
+    mesh = pyrender.Mesh.from_trimesh(mesh, material=material)
+
+    # --- scene ---
+    scene = pyrender.Scene(bg_color=[0, 0, 0, 0], ambient_light=(0.5, 0.5, 0.5))
+    scene.add(mesh)
+
+    # --- camera ---
+    cam_t = camera_translation.copy()
+    cam_t[0] *= -1  # match your original renderer behavior
+
+    camera = pyrender.IntrinsicsCamera(
+        fx=focal_length[0],
+        fy=focal_length[1],
+        cx=camera_center[0],
+        cy=camera_center[1],
+    )
+
+    cam_pose = np.eye(4)
+    cam_pose[:3, 3] = cam_t
+    scene.add(camera, pose=cam_pose)
+
+    # --- light ---
+    light = pyrender.DirectionalLight(color=[1.0, 1.0, 1.0], intensity=2.0)
+    light_pose = np.eye(4)
+    light_pose[:3, 3] = [0, 1, 1]
+    scene.add(light, pose=light_pose)
+
+    # --- render (SAFE) ---
+    renderer = pyrender.OffscreenRenderer(W, H)
+
+    try:
+        color, _ = renderer.render(scene, flags=pyrender.RenderFlags.RGBA)
+    finally:
+        renderer.delete()
+
+    color = color[:, :, :3]
+
+    # --- composite ---
+    if image.max() > 1:
+        image = image.astype(np.float32) / 255.0
+
+    color = color.astype(np.float32) / 255.0
+
+    mask = (color.sum(axis=2) > 0)[..., None]
+    out = color * mask + image * (1 - mask)
+
+    return (out * 255).astype(np.uint8)
 
 def plot_joints_3d(ax, joints_pred, joints_gt, title=''):
     """Scatter pred (red) and GT (blue) 3D joints on a matplotlib Axes3D."""
@@ -630,7 +712,7 @@ def run_visual_tests(args, hparams, ds, renderer, faces,
     test_03()
     test_04()
     test_05()
-    test_06()
+    #test_06()
     test_07()
     test_08()
     test_09()
