@@ -16,6 +16,8 @@ Output: debug_vis_out/sample_{i}.png  (one file per sample)
 """
 
 import os
+os.environ['PYOPENGL_PLATFORM'] = 'egl'
+
 import sys
 import argparse
 import numpy as np
@@ -32,7 +34,7 @@ for _p in (_HERE, _ROOT):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-os.environ.setdefault('PYOPENGL_PLATFORM', 'egl')
+#os.environ.setdefault('PYOPENGL_PLATFORM', 'egl')
 
 
 # ---------------------------------------------------------------------------
@@ -392,6 +394,7 @@ def run_visual_tests(args, hparams, ds, renderer, faces,
         _fi_r.renderer = _pyrender.OffscreenRenderer(fw, fh, point_size=1.0)
         _fi_r.camera_center = [fw // 2, fh // 2]
         full_render = render_mesh_on_image(_fi_r, v, cam_t_full, canvas, [fl_val, fl_val])
+        _fi_r.renderer.delete()
         del _fi_r
 
         # Also crop render for side-by-side comparison

@@ -1,13 +1,8 @@
 #!/bin/bash
-# Pre-convert datasets to MHR cache files.
-# Run this ONCE before training to avoid per-sample SMPL→MHR optimisation
-# during training (which would be ~200 iterations × N samples = very slow).
 #
 # Usage:
-#   ./scripts/preconvert_mhr.sh [--config path/to/config.yaml] [--gpu N]
-#   ./scripts/preconvert_mhr.sh --resume          # skip already-cached datasets
+#      docker exec -it mhrd-pose-container bash -c "cd /home/user/workspace && /home/user/workspace/scripts/debug_vis.sh --n 6 --dataset agora-bfh --test --cfg MHRD-Pose/config_mhr.yaml"
 #
-# After this completes, train_mhr.sh will load from cache automatically.
 
 set -e
 
