@@ -15,6 +15,7 @@ from mhr_constants import (
     NUM_FACE_EXPRESSION_BLENDSHAPES,
     NUM_LBS_MODEL_PARAMS,
     NUM_MHR_SKELETON_JOINTS,
+    MHR_TO_SMPL_JOINT_INDICES,
 )
 
 
@@ -193,7 +194,6 @@ class MHRLoss(nn.Module):
         pred_identity = pred['pred_identity']
         pred_expr = pred['pred_expr']
         pred_pose = pred['pred_pose']
-        pred_joints = pred['joints3d'][:, :self.num_joints]
         # Use SMPL-ordered 2D joints when available (added in mhr_head.py).
         # joints2d_smpl is projected from smpl_joints3d whose 24-joint ordering
         # (0=pelvis … 23=R-wrist) matches the GT keypoint annotations in
@@ -286,13 +286,24 @@ class MHRLoss(nn.Module):
                 criterion=criterion,
             )
         elif gt_joints is not None:
+            # Fallback: map raw 127-joint MHR skel_state → SMPL ordering.
+            # The first 24 MHR joints are foot/twist procedurals, so direct
+            # [:, :24] slicing would compare anatomically unrelated joints.
+            idx = torch.as_tensor(
+                MHR_TO_SMPL_JOINT_INDICES, dtype=torch.long,
+                device=pred['joints3d'].device,
+            )
+            pred_full = pred['joints3d']          # [B, 127, 3]
+            pred_mapped = pred_full.index_select(1, idx)
+            if gt_joints.shape[1] >= max(MHR_TO_SMPL_JOINT_INDICES) + 1:
+                gt_mapped = gt_joints.index_select(1, idx.to(gt_joints.device))
+            else:
+                gt_mapped = gt_joints[:, :self.num_joints]
             loss_keypoints_3d = keypoint_3d_loss(
-                pred_joints,
-                gt_joints[:, :self.num_joints],
-                criterion=criterion,
+                pred_mapped, gt_mapped, criterion=criterion,
             )
         else:
-            loss_keypoints_3d = torch.tensor(0.0, device=pred_joints.device)
+            loss_keypoints_3d = torch.tensor(0.0, device=pred['joints3d'].device)
 
         # Compute per-vertex shape loss
         if gt_vertices is not None:

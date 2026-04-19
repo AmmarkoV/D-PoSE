@@ -12,7 +12,7 @@ from loguru import logger
 import pytorch_lightning as pl
 from torch.utils.data import DataLoader, ConcatDataset
 
-from mhr_constants import NUM_MHR_SKELETON_JOINTS
+from mhr_constants import NUM_MHR_SKELETON_JOINTS, MHR_TO_SMPL_JOINT_INDICES
 from dataset_wrapper import DatasetHMR
 from train.utils.eval_utils import reconstruction_error
 from train.utils.renderer import Renderer
@@ -217,19 +217,21 @@ class MHRTrainer(pl.LightningModule):
             pred_keypoints_3d = pred_smpl[:, :24]
             gt_keypoints_3d = gt_smpl_joints[:, :24]
         else:
-            gt_keypoints_3d = batch.get('joints3d_mhr', batch.get('joints3d', None))
-            if gt_keypoints_3d is not None and (
-                gt_keypoints_3d.ndim != 3 or gt_keypoints_3d.shape[-1] < 3
-            ):
-                logger.warning(
-                    f"joints3d has unexpected shape {gt_keypoints_3d.shape}; skipping 3D eval"
-                )
-                gt_keypoints_3d = None
-            if gt_keypoints_3d is not None:
-                gt_keypoints_3d = gt_keypoints_3d[:, :NUM_MHR_SKELETON_JOINTS]
+            # Fallback: map MHR skel_state's 127 joints to SMPL ordering via
+            # MHR_TO_SMPL_JOINT_INDICES. Slicing the raw [:24] does NOT work —
+            # the first 24 MHR joints are foot/twist procedurals, not body joints.
+            idx = torch.as_tensor(
+                MHR_TO_SMPL_JOINT_INDICES, dtype=torch.long,
+                device=pred['joints3d'].device,
+            )
+            pred_keypoints_3d = pred['joints3d'].index_select(1, idx)
+            gt_joints_mhr = batch.get('joints3d_mhr', batch.get('joints3d', None))
+            if gt_joints_mhr is not None and gt_joints_mhr.ndim == 3 \
+                    and gt_joints_mhr.shape[1] >= max(MHR_TO_SMPL_JOINT_INDICES) + 1:
+                gt_keypoints_3d = gt_joints_mhr.index_select(1, idx.to(gt_joints_mhr.device))
             else:
+                # Last resort: original-dataset SMPL joints (already SMPL-ordered).
                 gt_keypoints_3d = batch.get('joints', None)[:, :NUM_MHR_SKELETON_JOINTS]
-            pred_keypoints_3d = pred['joints3d'][:, :NUM_MHR_SKELETON_JOINTS]
 
         # Pelvis-center
         gt_pelvis = (gt_keypoints_3d[:, [1]] + gt_keypoints_3d[:, [2]]) / 2.0

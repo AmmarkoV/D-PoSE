@@ -267,11 +267,14 @@ class DatasetHMR(OriginalDatasetHMR):
         # 8-element [tx, ty, tz, qw, qx, qy, qz, 1] or 16-element column-major
         # 4×4 transforms. We detect the format at runtime.
         with torch.no_grad():
+            # apply_correctives=True to match mhr_head.py's training-time forward.
+            # Using False here would produce joints from a slightly different
+            # mesh than what the network is regressing against.
             _, skel_state = self.mhr_instance(
                 identity_coeffs=identity_coeffs.float(),
                 model_parameters=lbs_model_params.float(),
                 face_expr_coeffs=face_expr_coeffs.float(),
-                apply_correctives=False,
+                apply_correctives=True,
             )
         joints3d = _extract_joints_from_skel_state(skel_state)
 

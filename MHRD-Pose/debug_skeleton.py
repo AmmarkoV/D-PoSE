@@ -115,29 +115,9 @@ SMPL_JOINT_NAMES = [
     'L_elbow', 'R_elbow', 'L_wrist', 'R_wrist', 'L_hand', 'R_hand',
 ]
 
-# SMPL→MHR joint index mapping for comparison (approximate):
-# SMPL 0 (hip/pelvis) ≈ MHR joint 1 (hip)
-# SMPL 1 (L_hip) ≈ MHR joint 9 (rightUpLeg in pymomentum naming, but actual index may vary)
-# We'll compare by position rather than index since ordering differs.
-SMPL_MHR_INDEX_HINT = {
-    0: 1,   # pelvis → hip
-    1: 9,   # L_hip
-    2: 10,  # R_hip
-    4: 11,  # L_knee
-    5: 12,  # R_knee
-    7: 13,  # L_ankle
-    8: 14,  # R_ankle
-    10: 15, # L_foot
-    11: 16, # R_foot
-    13: 4,  # neck
-    15: 5,  # head
-    17: 17, # L_shoulder
-    18: 18, # R_shoulder
-    19: 19, # L_elbow
-    20: 20, # R_elbow
-    21: 21, # L_wrist
-    22: 22, # R_wrist
-}
+# SMPL→MHR joint index mapping imported from mhr_constants — single source of truth.
+from mhr_constants import MHR_TO_SMPL_JOINT_INDICES as _MHR_TO_SMPL
+SMPL_MHR_INDEX_HINT = {smpl_i: mhr_i for smpl_i, mhr_i in enumerate(_MHR_TO_SMPL)}
 
 
 # ---------------------------------------------------------------------------
@@ -275,7 +255,7 @@ def main():
                 identity_coeffs=mhr_identity,
                 model_parameters=mhr_pose,
                 face_expr_coeffs=mhr_expr,
-                apply_correctives=False,
+                apply_correctives=True,
             )
         verts_m_out = verts_cm_out.cpu().numpy() * 0.01  # [1, V, 3]
         skel_np = skel_state.cpu().numpy()  # [1, 127, 8]
@@ -398,22 +378,32 @@ def main():
             fl_est = (img_w**2 + img_h**2)**0.5
             fl_crop = fl_est * (224.0 / (bbox_scale * 200.0))
 
-            # Pelvis 2D from keypoints
+            # Pelvis 2D from keypoints (mid of L-hip[1], R-hip[2])
             pelvis_kp_full = (kp_orig[1, :2] + kp_orig[2, :2]) / 2.0
             pelvis_kp_crop = ((pelvis_kp_full[0] - (bbox_center[0] - half)) / (2*half) * 224,
                               (pelvis_kp_full[1] - (bbox_center[1] - half)) / (2*half) * 224)
             print(f'  Pelvis 2D from keypoints (crop px): ({pelvis_kp_crop[0]:.0f}, {pelvis_kp_crop[1]:.0f})')
 
-            # Project GT SMPL joints to crop using same formula as debug_vis
+            # Pelvis-centre the 3D SMPL joints before projecting (the renderer
+            # puts the SMPL pelvis at world origin and aligns it to the 2D pelvis
+            # via cam_t). Previously we projected raw joints which carry the
+            # MHR origin-at-feet offset — that always flagged MISMATCH spuriously.
+            gt_pel = (gt_smpl_joints[1] + gt_smpl_joints[2]) / 2.0
+            gt_joints_pc = gt_smpl_joints - gt_pel
+
+            # Camera translation (tx, ty) derived from the observed pelvis 2D.
+            tx = (pelvis_kp_crop[0] - 112.0) * tz_est / fl_crop
+            ty = (pelvis_kp_crop[1] - 112.0) * tz_est / fl_crop
+
             for ji in [0, 1, 2, 4, 5, 10, 11, 19, 20]:
-                if ji >= gt_smpl_joints.shape[0]:
+                if ji >= gt_joints_pc.shape[0]:
                     continue
-                j3d = gt_smpl_joints[ji]
+                j3d = gt_joints_pc[ji]
                 depth = j3d[2] + tz_est
                 if depth <= 0:
                     continue
-                jx = 112 + fl_crop * (j3d[0] + (pelvis_kp_crop[0] - 112) * tz_est / fl_crop) / depth
-                jy = 112 + fl_crop * (j3d[1] + (pelvis_kp_crop[1] - 112) * tz_est / fl_crop) / depth
+                jx = 112 + fl_crop * (j3d[0] + tx) / depth
+                jy = 112 + fl_crop * (j3d[1] + ty) / depth
                 kp_crop_x = (kp_orig[ji, 0] - (bbox_center[0] - half)) / (2*half) * 224
                 kp_crop_y = (kp_orig[ji, 1] - (bbox_center[1] - half)) / (2*half) * 224
                 proj_dist = np.sqrt((jx - kp_crop_x)**2 + (jy - kp_crop_y)**2)
