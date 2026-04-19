@@ -132,7 +132,8 @@ class DatasetHMR(OriginalDatasetHMR):
         try:
             import smplx
             import sys
-            sys.path.append('../MHR')
+            sys.path.append('../MHR/')
+            sys.path.append('../')
             from mhr.mhr import MHR
             #from mhr_hmr import MHRHMR
             # conversion.py uses local-relative imports so its directory must be on path
