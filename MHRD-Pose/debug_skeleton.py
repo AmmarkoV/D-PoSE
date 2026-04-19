@@ -294,16 +294,22 @@ def main():
             name = MHR_NAMES[ji] if ji < len(MHR_NAMES) else f'joint_{ji}'
             print(f'    [{ji:3d}] {name:16s}: {skel_joints_m[ji]}')
 
+        # Ensure skel_joints_m is 2D [N, 3] for indexing consistency
+        skel_joints_m = np.atleast_2d(skel_joints_m)
+        if skel_joints_m.shape[0] == 1 and skel_joints_m.shape[1] > 20:
+            # Shape (1, 127, 3) — squeeze batch
+            skel_joints_m = skel_joints_m[0]
+
         # ---- Compare GT SMPL joints vs GT MHR skel joints --------------------
         print(f'\n--- Coordinate Comparison ---')
         print(f'  GT SMPL joints range: '
               f'y=[{gt_smpl_joints[:,1].min():.3f}, {gt_smpl_joints[:,1].max():.3f}]')
         print(f'  GT MHR skel range (first 24): '
-              f'y=[{skel_joints_m[:24,:,1].min():.3f}, {skel_joints_m[:24,:,1].max():.3f}]')
+              f'y=[{skel_joints_m[:24,1].min():.3f}, {skel_joints_m[:24,1].max():.3f}]')
 
         # Pelvis positions
         smpl_pelvis = gt_smpl_joints[0]
-        mhr_hip = skel_joints_m[1] if len(MHR_NAMES) > 1 else skel_joints_m[0]
+        mhr_hip = skel_joints_m[1] if skel_joints_m.shape[0] > 1 else skel_joints_m[0]
         print(f'  SMPL pelvis (joint 0): {smpl_pelvis}')
         print(f'  MHR hip (joint 1):     {mhr_hip}')
         print(f'  Distance: {np.linalg.norm(smpl_pelvis - mhr_hip):.3f} m')
