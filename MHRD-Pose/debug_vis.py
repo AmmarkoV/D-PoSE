@@ -120,6 +120,25 @@ def render_mesh_stateless(
     camera_center=None,
     mesh_color=(0.9, 0.7, 0.7),
 ):
+    """Render a mesh onto an image using an isolated EGL context.
+
+    Coordinate-system contract
+    ──────────────────────────
+    Input vertices must be in SMPL / OpenCV camera-space convention:
+      +X right,  +Y down,  +Z forward (depth increasing away from camera).
+
+    The function converts to pyrender / OpenGL convention internally:
+      +X right,  +Y up,    camera looks along −Z.
+
+    camera_translation = [tx, ty, tz] in metres, pelvis-centred:
+      tz — depth of the body root from the camera
+      tx — rightward offset (positive → body right of principal point)
+      ty — downward offset  (positive → body below principal point)
+
+    Effective projection formula (after the Y-flip and tx-negation below):
+      u = cx + fx * (x + tx) / (z + tz)
+      v = cy + fy * (y + ty) / (z + tz)
+    """
     import numpy as np
     import pyrender
     import trimesh
@@ -129,65 +148,81 @@ def render_mesh_stateless(
     if camera_center is None:
         camera_center = [W // 2, H // 2]
 
-    # --- create mesh ---
+    # -- Step 1: build trimesh and flip Y-axis --------------------------------
+    # Vertices arrive in camera-space Y-down (SMPL/OpenCV).
+    # pyrender uses Y-up (OpenGL), so we rotate 180° around X:
+    #   (x, y, z)  →  (x, −y, −z)
+    # After this rotation:
+    #   • Y is now up  (head projects above the principal point)
+    #   • Z is negated, so positive-depth objects sit at negative pyrender Z,
+    #     which is in front of the camera (pyrender looks along −Z). ✓
     mesh = trimesh.Trimesh(vertices, faces, process=False)
-
-    # pyrender expects Y-up → flip like your original renderer
-    rot = trimesh.transformations.rotation_matrix(
-        np.radians(180), [1, 0, 0]
-    )
-    mesh.apply_transform(rot)
+    rot_180x = trimesh.transformations.rotation_matrix(np.radians(180), [1, 0, 0])
+    mesh.apply_transform(rot_180x)
 
     material = pyrender.MetallicRoughnessMaterial(
         metallicFactor=0.0,
         alphaMode='OPAQUE',
         baseColorFactor=(*mesh_color, 1.0)
     )
-
     mesh = pyrender.Mesh.from_trimesh(mesh, material=material)
 
-    # --- scene ---
+    # -- Step 2: scene --------------------------------------------------------
     scene = pyrender.Scene(bg_color=[0, 0, 0, 0], ambient_light=(0.5, 0.5, 0.5))
     scene.add(mesh)
 
-    # --- camera ---
+    # -- Step 3: camera pose --------------------------------------------------
+    # pyrender's IntrinsicsCamera looks along −Z in its own frame.
+    # We place the camera at world position (cam_t[0], cam_t[1], cam_t[2]).
+    # The mesh root (pelvis) is at world origin; the camera is tz metres away.
+    #
+    # tx is negated here to reconcile two sign conventions:
+    #   • In SMPL/PARE cam_t, positive tx means the person is to the RIGHT of
+    #     the principal point, so u > cx.
+    #   • After the 180°X mesh flip, a vertex at world x>0 still has x>0.
+    #   • pyrender projection:  u = cx + fx * X_cam / (−Z_cam)
+    #     where X_cam = x_world − cam_pos_x = x_world − (−tx) = x_world + tx. ✓
     cam_t = camera_translation.copy()
-    cam_t[0] *= -1  # match your original renderer behavior
+    cam_t[0] *= -1   # negate tx: camera is placed at (−tx, ty, tz)
+
+    # 4×4 rigid camera pose: identity rotation (camera aligned with world axes),
+    # translation column = cam_t.  pyrender interprets this as the camera-to-world
+    # transform, so the camera origin is at position cam_t in world space.
+    cam_pose = np.eye(4)
+    cam_pose[:3, 3] = cam_t  # [−tx, ty, tz]
 
     camera = pyrender.IntrinsicsCamera(
-        fx=focal_length[0],
-        fy=focal_length[1],
-        cx=camera_center[0],
-        cy=camera_center[1],
+        fx=focal_length[0],   # horizontal focal length in pixels
+        fy=focal_length[1],   # vertical focal length in pixels
+        cx=camera_center[0],  # principal point x (usually image-width / 2)
+        cy=camera_center[1],  # principal point y (usually image-height / 2)
     )
-
-    cam_pose = np.eye(4)
-    cam_pose[:3, 3] = cam_t
     scene.add(camera, pose=cam_pose)
 
-    # --- light ---
+    # -- Step 4: lighting -----------------------------------------------------
+    # Single directional light placed above-left-front; no pose rotation needed
+    # because DirectionalLight direction is encoded in the pose matrix.
     light = pyrender.DirectionalLight(color=[1.0, 1.0, 1.0], intensity=2.0)
     light_pose = np.eye(4)
-    light_pose[:3, 3] = [0, 1, 1]
+    light_pose[:3, 3] = [0, 1, 1]   # light position hint (direction light ignores t)
     scene.add(light, pose=light_pose)
 
-    # --- render (SAFE) ---
+    # -- Step 5: render with an isolated EGL context --------------------------
+    # Creating a second OffscreenRenderer while a first one is alive causes
+    # EGL_BAD_ALLOC on some drivers.  We always create + delete here so no
+    # context persists between calls.
     renderer = pyrender.OffscreenRenderer(W, H)
-
     try:
         color, _ = renderer.render(scene, flags=pyrender.RenderFlags.RGBA)
     finally:
-        renderer.delete()
+        renderer.delete()   # release EGL context immediately
 
+    # -- Step 6: composite over background ------------------------------------
     color = color[:, :, :3]
-
-    # --- composite ---
     if image.max() > 1:
         image = image.astype(np.float32) / 255.0
-
     color = color.astype(np.float32) / 255.0
-
-    mask = (color.sum(axis=2) > 0)[..., None]
+    mask = (color.sum(axis=2) > 0)[..., None]   # rendered pixels (depth > 0)
     out = color * mask + image * (1 - mask)
 
     return (out * 255).astype(np.uint8)
@@ -910,137 +945,139 @@ def main():
         # so we pass the full-image focal length and let renderer handle it.
         crop_focal = fl_val  # renderer will use this if we pass it explicitly
 
-        # ---- GT mesh --------------------------------------------------------
-        gt_verts = item.get('vertices')   # [V, 3] in metres, body-local space
-        gt_cam_t_np = None
-        gt_render = None
+        # ---- GT mesh (full-image render) ----------------------------------------
+        # Render onto the full-resolution image rather than the 224 crop.
+        # The full-image path is reliable because it uses the raw camera intrinsics
+        # (fl_val, principal point at image centre) with no crop rescaling, which is
+        # what caused the upside-down / misaligned rendering on the crop path.
+        gt_verts = item.get('vertices')   # [V, 3] metres, MHR body space
+        gt_render = None   # uint8 image for the figure panel (set below)
 
         if gt_verts is not None:
-            gt_verts_np = to_numpy(gt_verts)  # [V, 3] in metres
+            gt_verts_np = to_numpy(gt_verts)  # [V, 3] metres
 
-            # MHR body has its origin at the feet, not the pelvis.
-            # Subtract the SMPL pelvis (joint 0) so the pelvis is at (0,0,0)
-            # before rendering — this matches the cam_t formula which assumes
-            # the body root is at the origin.
-            pelvis_3d = compute_smpl_pelvis(gt_verts_np)
-            gt_verts_np = gt_verts_np - pelvis_3d[np.newaxis]
+            # -- Pelvis centering -------------------------------------------------
+            # MHR stores vertices with the body origin at the feet.
+            # Subtract SMPL pelvis (joint 0, via J_regressor → barycentric chain)
+            # so the pelvis lands at world origin (0, 0, 0).
+            # Every camera-translation formula below assumes root == origin.
+            pelvis_3d = compute_smpl_pelvis(gt_verts_np)   # [3] metres, camera space
+            gt_verts_np = gt_verts_np - pelvis_3d[np.newaxis]  # [V,3] pelvis-centred
             print(f'  SMPL pelvis offset: {pelvis_3d.round(3)}')
 
-            # Cached GT MHR vertices are in camera space (Y-down, OpenCV convention).
-            # dataset_wrapper keeps global_orient from pose_cam (camera-space body
-            # orientation) and zeros only transl. The renderer's internal 180°X
-            # rotation converts Y-down → Y-up for pyrender, giving correct display.
+            # -- Full-image camera intrinsics ------------------------------------
+            fh, fw = int(img_h_full), int(img_w_full)
+            bbox_height = bbox_scale * 200.0   # bounding-box height in full-image px
 
-            # GT vertices are in camera-relative space (pelvis at origin, Y-down).
-            # Renderer applies 180° X-rotation + flips tx, with principal point at [112,112].
-            # tz: from weak-perspective depth formula using full-image focal length.
-            # tx, ty: align the pelvis with its GT 2D position in the crop.
-            #   The renderer flips tx (tx *= -1) internally, so we pass tx as-is.
-            #   After flip + projection: x_pix = 112 + fl_crop * tx / tz
-            #                           y_pix = 112 + fl_crop * ty / tz
-            bbox_height = bbox_scale * 200.0
-            fl_crop = fl_val * (224.0 / bbox_height)
+            # Depth — weak-perspective formula:  tz = 2 * fl / bbox_height
+            # Derivation: at depth tz a person of metric height H projects to
+            #   H * fl / tz  pixels.  Setting H≈2 m and that equal to bbox_height
+            # gives  tz = 2 * fl / bbox_height.
+            # This places the body so it fills the annotated bounding box.
             tz = 2.0 * fl_val / bbox_height
-            half = bbox_scale * 100.0  # half bbox size in full-image pixels
 
-            # Use GT pelvis 2D position (mean of L-hip[1] and R-hip[2] in SMPL ordering)
-            # to compute tx, ty so the body root aligns with the actual person in the crop.
-            tx, ty = 0.0, 0.0
+            # -- Horizontal / vertical translation from 2D pelvis ---------------
+            # keypoints_orig: [24, 3] full-image pixel coords, SMPL 24-joint order.
+            #   j=0  Pelvis_SMPL   j=1  L_Hip_SMPL   j=2  R_Hip_SMPL   …
+            # We average L_Hip and R_Hip to approximate the 2D pelvis pixel.
+            #
+            # Pinhole projection for the pelvis sitting at world origin (0,0,0):
+            #   x_pix = cx + fx * cam_tx / tz   →   cam_tx = (x_pix − cx) * tz / fx
+            #   y_pix = cy + fy * cam_ty / tz   →   cam_ty = (y_pix − cy) * tz / fy
+            #
+            # render_mesh_stateless negates cam_t[0] internally (cam_t_x *= −1) to
+            # match pyrender's convention where the camera is oriented along −Z; we
+            # keep the sign positive here so the formula above is self-consistent.
+            tx_full, ty_full = 0.0, 0.0
             if 'keypoints_orig' in item:
-                kp_orig = to_numpy(item['keypoints_orig'])  # [J, 3]: x, y, conf
+                kp_orig = to_numpy(item['keypoints_orig'])   # [24, 3]: x_pix, y_pix, conf
                 if kp_orig.shape[0] >= 3:
-                    pelvis_full = (kp_orig[1, :2] + kp_orig[2, :2]) / 2.0  # full-img px
-                    # Convert pelvis full-image position → crop pixel position
-                    px = (pelvis_full[0] - (bbox_center[0] - half)) / (2 * half) * 224.0
-                    py = (pelvis_full[1] - (bbox_center[1] - half)) / (2 * half) * 224.0
-                    tx = (px - 112.0) * tz / fl_crop
-                    ty = (py - 112.0) * tz / fl_crop
+                    # Full-image pixel location of the estimated pelvis centre
+                    pelvis_2d = (kp_orig[1, :2] + kp_orig[2, :2]) / 2.0  # [x, y]
+                    # Principal point at the geometric image centre
+                    tx_full = (pelvis_2d[0] - fw / 2.0) * tz / fl_val
+                    ty_full = (pelvis_2d[1] - fh / 2.0) * tz / fl_val
+                    print(f'  pelvis_2d=({pelvis_2d[0]:.0f},{pelvis_2d[1]:.0f}) px  '
+                          f'tx={tx_full:.3f}  ty={ty_full:.3f}')
 
-            gt_cam_t_np = np.array([tx, ty, tz], dtype=np.float32)
-            # Diagnostics: expected pixel position (should match where pelvis was observed)
-            exp_px = 112.0 + fl_crop * tx / tz
-            exp_py = 112.0 + fl_crop * ty / tz
-            print(f'  GT verts centroid: {gt_verts_np.mean(axis=0).round(3)}')
-            if 'keypoints_orig' in item:
-                kp_dbg = to_numpy(item['keypoints_orig'])
-                for ji, jname in [(0, 'pelvis'), (1, 'L_hip'), (2, 'R_hip')]:
-                    if ji < kp_dbg.shape[0]:
-                        jx_c = (kp_dbg[ji, 0] - (bbox_center[0] - half)) / (2 * half) * 224.0
-                        jy_c = (kp_dbg[ji, 1] - (bbox_center[1] - half)) / (2 * half) * 224.0
-                        print(f'    kp_orig[{ji}] {jname}: full=({kp_dbg[ji,0]:.0f},{kp_dbg[ji,1]:.0f}) crop=({jx_c:.0f},{jy_c:.0f}) conf={kp_dbg[ji,2]:.2f}')
-            print(f'  GT cam_t: {gt_cam_t_np}  tz={tz:.2f}m  fl_crop={fl_crop:.0f}')
-            print(f'  Expected pelvis at crop px ({exp_px:.0f}, {exp_py:.0f})')
+            # cam_t = [tx, ty, tz] in metres:
+            #   tz — depth of the pelvis from the camera
+            #   tx — rightward offset (positive → person to the right of image centre)
+            #   ty — downward offset  (positive → person below image centre)
+            cam_t_full = np.array([tx_full, ty_full, tz], dtype=np.float32)
+            print(f'  cam_t_full={cam_t_full.round(3)}  fl={fl_val:.0f}  img={fw}x{fh}')
 
+            # -- Load original full-resolution image ----------------------------
+            # item['img'] is the 224×224 normalised crop; we need the raw full-
+            # resolution frame so the mesh projects to the correct pixel location.
+            import cv2 as _cv2
             try:
-                gt_render = render_mesh_on_image(
-                    renderer, gt_verts_np, gt_cam_t_np, img_crop, [fl_crop, fl_crop]
-                )
-                import cv2 as _cv2
-                # Project all 24 SMPL joints (pelvis-subtracted) onto the crop
-                # using the same pinhole formula as pyrender:
-                #   x_pix = cx + fl * cam_x / (-cam_z)
-                #   y_pix = cy + fl * cam_y / (-cam_z)
-                # where cam = world - cam_t, cam_z = z_world - tz (negative in front)
-                # and the renderer flips tx, so cam_x = x_world + tx_orig.
-                smpl_joints_pelvis = compute_smpl_joints(gt_verts_np)  # [24, 3], pelvis-centred
-                _tz = gt_cam_t_np[2]
-                _tx = gt_cam_t_np[0]
-                _ty = gt_cam_t_np[1]
-                for j3d in smpl_joints_pelvis:
-                    # Net projection formula accounting for renderer's 180°X mesh rotation
-                    # and tx-flip (renderer sets cam_t_x = -tx_orig).
-                    # The 180°X rotation maps (x,y,z)→(x,-y,-z); combined with the
-                    # camera at (-tx,ty,tz) and pyrender convention this gives:
-                    #   x_pix = cx + fl * (x + tx) / (z + tz)
-                    #   y_pix = cy + fl * (y + ty) / (z + tz)
-                    # (verified for pelvis at world-origin: gives px, py correctly)
-                    depth = j3d[2] + _tz   # ≈ tz for joints near z=0
-                    if depth <= 0:
-                        continue
-                    jx = int(round(112 + fl_crop * (j3d[0] + _tx) / depth))
-                    jy = int(round(112 + fl_crop * (j3d[1] + _ty) / depth))
-                    if 0 <= jx < 224 and 0 <= jy < 224:
-                        _cv2.circle(gt_render, (jx, jy), 3, (255, 255, 0), -1)
-                # Draw crosshair at expected pelvis position for debugging
-                _ep = (int(round(exp_px)), int(round(exp_py)))
-                _cv2.drawMarker(gt_render, _ep, (0, 255, 0), _cv2.MARKER_CROSS, 20, 2)
-            except Exception as e:
-                print(f'  GT render failed: {e}')
-                import traceback; traceback.print_exc()
-                gt_render = img_crop.copy()
-
-        # ---- full-image render (separate PNG) --------------------------------
-        if gt_verts is not None:
-            try:
-                import pyrender as _pyr
-                _pelvis_fi = compute_smpl_pelvis(gt_verts_np)
-                _v_fi = gt_verts_np - _pelvis_fi
-                _fh, _fw = int(img_h_full), int(img_w_full)
-                _tx_fi = _ty_fi = 0.0
-                if 'keypoints_orig' in item:
-                    _kp_fi = to_numpy(item['keypoints_orig'])
-                    if _kp_fi.shape[0] >= 3:
-                        _pf = (_kp_fi[1, :2] + _kp_fi[2, :2]) / 2.0
-                        _tx_fi = (_pf[0] - _fw / 2) * tz / fl_val
-                        _ty_fi = (_pf[1] - _fh / 2) * tz / fl_val
-                _cam_fi = np.array([_tx_fi, _ty_fi, tz], np.float32)
-                _canvas = np.full((_fh, _fw, 3), 200, dtype=np.uint8)
-                # Fresh renderer — EGL contexts can't be resized
-                from train.utils.renderer import Renderer as _RendererFI2
-                _fi_r2 = _RendererFI2(focal_length=fl_val, img_res=max(_fh, _fw),
-                                      faces=faces, mesh_color='pinkish')
-                _fi_r2.renderer = _pyr.OffscreenRenderer(_fw, _fh, point_size=1.0)
-                _fi_r2.camera_center = [_fw // 2, _fh // 2]
-                _full_render = render_mesh_on_image(
-                    _fi_r2, _v_fi, _cam_fi, _canvas, [fl_val, fl_val])
-                del _fi_r2
-                _fi_path = os.path.join(args.out_dir,
-                                        f'sample_{sample_idx:03d}_ds{ds_idx}_fullimg.png')
-                import cv2 as _cv2fi
-                _cv2fi.imwrite(_fi_path, _cv2fi.cvtColor(_full_render, _cv2fi.COLOR_RGB2BGR))
-                print(f'  Full-image render → {_fi_path}')
+                _bgr = _cv2.imread(item['imgname'])
+                if _bgr is not None:
+                    full_img = _cv2.cvtColor(_bgr, _cv2.COLOR_BGR2RGB)
+                else:
+                    full_img = np.full((fh, fw, 3), 128, dtype=np.uint8)
             except Exception as _e:
-                print(f'  Full-image render failed: {_e}')
+                print(f'  Could not load full image ({_e}); using grey canvas')
+                full_img = np.full((fh, fw, 3), 128, dtype=np.uint8)
+
+            # -- Render mesh onto the full image --------------------------------
+            # render_mesh_stateless pipeline:
+            #   1. Creates a fresh pyrender EGL context for this call only, then
+            #      destroys it — no shared-context state leaks between samples.
+            #   2. Applies a 180° rotation around X to every mesh vertex:
+            #          (x, y, z)  →  (x, −y, −z)
+            #      This converts camera-space Y-down (SMPL / OpenCV convention)
+            #      to Y-up (pyrender / OpenGL convention).
+            #   3. Negates cam_t[0] before assembling the camera pose matrix:
+            #          cam_pose = diag(1,1,1,1) with translation (−tx, ty, tz)
+            #      so the camera sits at the correct world position looking along −Z.
+            #   4. Uses IntrinsicsCamera(fx=fl_val, fy=fl_val, cx=fw/2, cy=fh/2).
+            gt_render_full = render_mesh_stateless(
+                gt_verts_np,                       # [V,3] metres, pelvis-centred, Y-down
+                faces,                             # [F,3] MHR triangle indices
+                cam_t_full,                        # [3] metres: [tx, ty, tz]
+                full_img,                          # background: full-resolution RGB uint8
+                [fl_val, fl_val],                  # [fx, fy]: full-image focal length (px)
+                camera_center=[fw // 2, fh // 2],  # principal point at image centre
+            )
+
+            # -- Overlay SMPL joint dots for alignment verification -------------
+            # Project every joint with the same pinhole formula pyrender uses.
+            # After the 180°X mesh flip and tx-negation in render_mesh_stateless
+            # the effective projection for a vertex at world (x, y, z) is:
+            #   u = cx + fx * (x + tx) / (z + tz)
+            #   v = cy + fy * (y + ty) / (z + tz)
+            # Derivation:
+            #   rotated vertex:  (x, −y, −z)
+            #   camera at:       (−tx, ty, tz)
+            #   vertex in cam:   (x+tx,  −y−ty,  −(z+tz))
+            #   pyrender (Y-up, looks along −Z):
+            #     u = cx + fx * (x+tx) / (z+tz)         ← depth = z+tz
+            #     v = cy − fy * (−y−ty) / (z+tz)
+            #       = cy + fy * (y+ty) / (z+tz)         ← verified: pelvis → pelvis_2d
+            smpl_joints = compute_smpl_joints(gt_verts_np)   # [24,3] pelvis-centred
+            for j3d in smpl_joints:
+                depth = j3d[2] + tz   # ≈ tz for joints near z=0
+                if depth <= 0:
+                    continue
+                jx_pix = int(round(fw / 2 + fl_val * (j3d[0] + tx_full) / depth))
+                jy_pix = int(round(fh / 2 + fl_val * (j3d[1] + ty_full) / depth))
+                if 0 <= jx_pix < fw and 0 <= jy_pix < fh:
+                    _cv2.circle(gt_render_full, (jx_pix, jy_pix), 4, (255, 255, 0), -1)
+
+            # Save full-resolution overlay as a separate diagnostic PNG
+            _fi_path = os.path.join(args.out_dir,
+                                    f'sample_{sample_idx:03d}_ds{ds_idx}_fullimg.png')
+            _cv2.imwrite(_fi_path, _cv2.cvtColor(gt_render_full, _cv2.COLOR_RGB2BGR))
+            print(f'  Full-image render → {_fi_path}')
+
+            # Scale down for the figure panel: target 224 px tall, preserve aspect.
+            # (Full images are typically wider than tall so this keeps panels uniform.)
+            _disp_h = 224
+            _disp_w = max(1, int(fw * _disp_h / fh))
+            gt_render = _cv2.resize(gt_render_full, (_disp_w, _disp_h),
+                                    interpolation=_cv2.INTER_LINEAR)
 
         # ---- prediction -----------------------------------------------------
         pred_render = None
@@ -1125,9 +1162,9 @@ def main():
         elif model is not None:
             add_image_panel('Pred mesh\n(failed)', img_crop)
 
-        # 3. GT mesh
+        # 3. GT mesh on full image (scaled down)
         if gt_render is not None:
-            add_image_panel('GT mesh', gt_render)
+            add_image_panel('GT mesh\n(full img)', gt_render)
         else:
             add_image_panel('GT mesh\n(no verts)', img_crop)
 
