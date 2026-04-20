@@ -1547,42 +1547,43 @@ def main():
             fh, fw = int(img_h_full), int(img_w_full)
             bbox_height = bbox_scale * 200.0   # bounding-box height in full-image px
 
-            # Depth — weak-perspective formula:  tz = 2 * fl / bbox_height
-            # Derivation: at depth tz a person of metric height H projects to
-            #   H * fl / tz  pixels.  Setting H≈2 m and that equal to bbox_height
-            # gives  tz = 2 * fl / bbox_height.
-            # This places the body so it fills the annotated bounding box.
-            tz = 2.0 * fl_val / bbox_height
-
-            # -- Horizontal / vertical translation from 2D pelvis ---------------
-            # keypoints_orig: [24, 3] full-image pixel coords, SMPL 24-joint order.
-            #   j=0  Pelvis_SMPL   j=1  L_Hip_SMPL   j=2  R_Hip_SMPL   …
-            # We average L_Hip and R_Hip to approximate the 2D pelvis pixel.
+            # -- Camera-space body translation from dataset ground truth -----------
+            # item['translation'] = cam_ext[:,3] + trans_cam = body root in camera
+            # space (metres). This is the authoritative depth value — it does NOT
+            # assume the person is 2 m tall, so it works for children and tall people.
             #
-            # Pinhole projection for the pelvis sitting at world origin (0,0,0):
-            #   x_pix = cx + fx * cam_tx / tz   →   cam_tx = (x_pix − cx) * tz / fx
-            #   y_pix = cy + fy * cam_ty / tz   →   cam_ty = (y_pix − cy) * tz / fy
-            #
-            # render_mesh_stateless negates cam_t[0] internally (cam_t_x *= −1) to
-            # match pyrender's convention where the camera is oriented along −Z; we
-            # keep the sign positive here so the formula above is self-consistent.
-            tx_full, ty_full = 0.0, 0.0
-            if 'keypoints_orig' in item:
-                kp_orig = to_numpy(item['keypoints_orig'])   # [24, 3]: x_pix, y_pix, conf
-                if kp_orig.shape[0] >= 3:
-                    # Full-image pixel location of the estimated pelvis centre
-                    pelvis_2d = (kp_orig[1, :2] + kp_orig[2, :2]) / 2.0  # [x, y]
-                    # Principal point at the geometric image centre
-                    tx_full = (pelvis_2d[0] - fw / 2.0) * tz / fl_val
-                    ty_full = (pelvis_2d[1] - fh / 2.0) * tz / fl_val
-                    print(f'  pelvis_2d=({pelvis_2d[0]:.0f},{pelvis_2d[1]:.0f}) px  '
-                          f'tx={tx_full:.3f}  ty={ty_full:.3f}')
+            # The MHR vertices are body-local: the pelvis sits at a fixed offset
+            # (pelvis_3d ≈ [0, −0.32, 0]) relative to the skeleton root.  After we
+            # subtract pelvis_3d the centred verts have root at world origin.
+            # The render call places the camera so the world origin projects to:
+            #   u = cx + fx * (0 + tx) / tz = cx + fx * tx / tz
+            #   v = cy + fy * (0 + ty) / tz = cy + fy * ty / tz
+            # So cam_t must be the absolute camera-space pelvis position:
+            #   cam_t = pelvis_3d_local + item['translation']
+            # where pelvis_3d_local = compute_smpl_pelvis(original_verts) ≈ [0,−0.32,0].
+            if 'translation' in item:
+                _transl = to_numpy(item['translation'])[:3]   # [tx, ty, tz] in metres
+                # Absolute camera-space pelvis: body-root translation + local pelvis offset
+                cam_t_full = (pelvis_3d + _transl).astype(np.float32)
+                tx_full, ty_full, tz = float(cam_t_full[0]), float(cam_t_full[1]), float(cam_t_full[2])
+                print(f'  translation={_transl.round(3)}  pelvis_local={pelvis_3d.round(3)}')
+            else:
+                # Fallback: weak-perspective formula tz = 2*fl/bbox_height.
+                # Assumes person is ~2 m tall — inaccurate for children or unusual scales.
+                tz = 2.0 * fl_val / bbox_height
+                tx_full, ty_full = 0.0, 0.0
+                if 'keypoints_orig' in item:
+                    kp_orig = to_numpy(item['keypoints_orig'])
+                    if kp_orig.shape[0] >= 3:
+                        pelvis_2d = (kp_orig[1, :2] + kp_orig[2, :2]) / 2.0
+                        tx_full = (pelvis_2d[0] - fw / 2.0) * tz / fl_val
+                        ty_full = (pelvis_2d[1] - fh / 2.0) * tz / fl_val
+                cam_t_full = np.array([tx_full, ty_full, tz], dtype=np.float32)
 
             # cam_t = [tx, ty, tz] in metres:
             #   tz — depth of the pelvis from the camera
             #   tx — rightward offset (positive → person to the right of image centre)
             #   ty — downward offset  (positive → person below image centre)
-            cam_t_full = np.array([tx_full, ty_full, tz], dtype=np.float32)
             print(f'  cam_t_full={cam_t_full.round(3)}  fl={fl_val:.0f}  img={fw}x{fh}')
 
             # -- Load original full-resolution image ----------------------------
