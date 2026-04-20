@@ -18,7 +18,7 @@ else
     echo "[WARNING] No venv found at ${VENV_PATH} — using system Python"
 fi
 
-export PYOPENGL_PLATFORM=osmesa
+#export PYOPENGL_PLATFORM=osmesa
 export CUDA_VISIBLE_DEVICES="1"
 
 # Preload conda's libstdc++ if needed (pymomentum requires GLIBCXX_3.4.31+
