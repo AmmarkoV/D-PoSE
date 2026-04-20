@@ -1186,10 +1186,25 @@ def dump_sample_diagnostics(
 
     # ── JSON dump ─────────────────────────────────────────────────────────────
     def _j(x):
-        """Convert numpy types to plain Python for JSON."""
-        if x is None: return None
-        if isinstance(x, np.ndarray): return x.tolist()
-        if isinstance(x, (np.floating, np.integer)): return x.item()
+        """Recursively convert numpy / torch types to plain Python for JSON."""
+        if x is None:
+            return None
+        if isinstance(x, np.ndarray):
+            return x.tolist()          # tolist() already recurses to Python scalars
+        if isinstance(x, np.floating):
+            return float(x)
+        if isinstance(x, np.integer):
+            return int(x)
+        if isinstance(x, np.bool_):
+            return bool(x)
+        if isinstance(x, dict):
+            return {k: _j(v) for k, v in x.items()}
+        if isinstance(x, (list, tuple)):
+            return [_j(v) for v in x]
+        # torch tensors (shouldn't appear but guard anyway)
+        if hasattr(x, 'item') and callable(x.item):
+            try: return x.item()
+            except Exception: pass
         return x
 
     diag_json = {
@@ -1268,7 +1283,7 @@ def dump_sample_diagnostics(
     }
 
     with open(f'{prefix}_diag.json', 'w') as fj:
-        json.dump(diag_json, fj, indent=2)
+        json.dump(_j(diag_json), fj, indent=2)
 
     # ── NPZ dump ──────────────────────────────────────────────────────────────
     np.savez_compressed(
