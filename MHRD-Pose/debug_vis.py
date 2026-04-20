@@ -316,10 +316,15 @@ def run_visual_tests(args, hparams, ds, renderer, faces, smpl_faces,
     blank224    = lambda: (np.ones((224, 224, 3), dtype=np.float32) * 0.8 * 255).astype(np.uint8)
 
     def _render(verts, cam_t, bg=None):
-        """Render verts on a 224×224 background (copies cam_t)."""
+        """Render verts on a 224×224 background using an isolated EGL context.
+
+        Uses render_mesh_stateless so each call creates and destroys its own
+        context. This avoids the EGL driver bug where creating a second context
+        (e.g. for a full-res render) permanently invalidates the shared one.
+        """
         bg = bg if bg is not None else blank224()
-        return render_mesh_on_image(renderer, verts, cam_t.copy(), bg.copy(),
-                                    [fl_crop, fl_crop])
+        return render_mesh_stateless(verts, faces, cam_t.copy(), bg.copy(),
+                                     [fl_crop, fl_crop])
 
     def _save(fig, fname):
         path = os.path.join(out_dir, fname)
@@ -548,13 +553,11 @@ def run_visual_tests(args, hparams, ds, renderer, faces, smpl_faces,
         except AttributeError:
             sx_faces = smplx_model.faces_tensor.cpu().numpy().astype(np.int32)
 
-        from train.utils.renderer import Renderer as _Renderer
-        sx_renderer = _Renderer(focal_length=fl_crop, img_res=224,
-                                faces=sx_faces, mesh_color='light_blue')
         cam_t = np.array([0., 0., tz], np.float32)
 
         def _rsx(vv):
-            return render_mesh_on_image(sx_renderer, vv, cam_t.copy(), blank224(), [fl_crop, fl_crop])
+            return render_mesh_stateless(vv, sx_faces, cam_t.copy(), blank224(),
+                                         [fl_crop, fl_crop], mesh_color=(0.6, 0.8, 1.0))
 
         panels = [
             ('SMPLX canonical\n(no sub)',          sv),
@@ -569,8 +572,7 @@ def run_visual_tests(args, hparams, ds, renderer, faces, smpl_faces,
         fig.suptitle(f'TEST 08: SMPLX canonical mesh (ground-truth renderer orientation)\n'
                      f'pelvis={sp.round(3)}  Y∈[{vmin[1]:.3f},{vmax[1]:.3f}]', fontsize=9)
         path = _save(fig, 'test_08_smplx_canonical.png')
-        sx_renderer.renderer.delete()
-        del sx_renderer, smplx_model
+        del smplx_model
         print(f'[08] SMPLX canonical  →  {path}')
 
     # ── TEST 09: SMPL joint regressor overlay ─────────────────────────────
@@ -687,7 +689,11 @@ def run_visual_tests(args, hparams, ds, renderer, faces, smpl_faces,
         lp = np.eye(4); lp[:3, 3] = [0, 1, 1]
         scene.add(_pyrender.DirectionalLight([1,1,1], 1.5), pose=lp)
 
-        color, _ = renderer.renderer.render(scene, flags=_pyrender.RenderFlags.RGBA)
+        r11 = _pyrender.OffscreenRenderer(224, 224)
+        try:
+            color, _ = r11.render(scene, flags=_pyrender.RenderFlags.RGBA)
+        finally:
+            r11.delete()
         img_render = (color[:, :, :3].astype(np.float32) / 255.0)
 
         fig, axes = plt.subplots(1, 2, figsize=(11, 5))
