@@ -942,15 +942,19 @@ def dump_sample_diagnostics(
         u_ann = float(kp_orig_np[ji, 0]) if kp_orig_np is not None and ji < kp_orig_np.shape[0] else None
         v_ann = float(kp_orig_np[ji, 1]) if kp_orig_np is not None and ji < kp_orig_np.shape[0] else None
 
-        # Solve depth from absolute position + 2D annotation
-        # (valid only when the vertex X,Y,Z are in absolute camera space)
+        # Solve depth using ABSOLUTE joint position: j3d_abs = j3d_orig + translation.
+        # j3d_orig is body-local (no camera translation), so we must add translation_np
+        # before applying the pinhole back-projection Z = fl * X_abs / (u - cx).
+        # If this correctly back-projects to kp_orig then tz_solved_median ≈ translation[2].
         tz_solved_x = tz_solved_y = None
-        if u_ann is not None and abs(u_ann - cx_assumed) > 1.0 and conf > 0.1:
-            denom_x = u_ann - cx_assumed
-            tz_solved_x = fl_x * j3d_orig[0] / denom_x if abs(denom_x) > 1 else None
-        if v_ann is not None and abs(v_ann - cy_assumed) > 1.0 and conf > 0.1:
-            denom_y = v_ann - cy_assumed
-            tz_solved_y = fl_y * j3d_orig[1] / denom_y if abs(denom_y) > 1 else None
+        if translation_np is not None:
+            j3d_abs_i = j3d_orig + translation_np[:3]
+            if u_ann is not None and abs(u_ann - cx_assumed) > 1.0 and conf > 0.1:
+                denom_x = u_ann - cx_assumed
+                tz_solved_x = fl_x * float(j3d_abs_i[0]) / denom_x if abs(denom_x) > 1 else None
+            if v_ann is not None and abs(v_ann - cy_assumed) > 1.0 and conf > 0.1:
+                denom_y = v_ann - cy_assumed
+                tz_solved_y = fl_y * float(j3d_abs_i[1]) / denom_y if abs(denom_y) > 1 else None
 
         if tz_solved_x is not None and 0.5 < tz_solved_x < 50.0:
             tz_solved_per_joint_x.append(tz_solved_x)
@@ -981,15 +985,17 @@ def dump_sample_diagnostics(
             err_bbox = float(np.sqrt((u_bbox - u_ann)**2 + (v_bbox - v_ann)**2))
             reproj_errors_bbox.append(err_bbox)
 
-        # Compute tx, ty for tz_from_translation (ground-truth depth)
+        # Project using cam_t_full = pelvis_3d + translation — the actual rendering translation.
+        # Equivalent to absolute pinhole:  u = cx + fx*(j_orig[0]+transl[0])/(j_orig[2]+transl[2])
+        # because centred j_cent = j_orig − pelvis_3d, so j_cent + cam_t_full = j_orig + transl.
         u_transl = v_transl = err_transl = None
-        if tz_from_translation is not None and tz_from_translation > 0:
-            _tx_t = (float(pelvis_2d[0]) - cx_assumed) * tz_from_translation / fl_x if pelvis_2d is not None else 0.0
-            _ty_t = (float(pelvis_2d[1]) - cy_assumed) * tz_from_translation / fl_y if pelvis_2d is not None else 0.0
-            u_transl, v_transl = project_centred(j3d_cent, tz_from_translation, _tx_t, _ty_t)
-            if u_ann is not None and u_transl is not None and conf > 0.1:
-                err_transl = float(np.sqrt((u_transl - u_ann)**2 + (v_transl - v_ann)**2))
-                reproj_errors_transl.append(err_transl)
+        u_transl, v_transl = project_centred(j3d_cent,
+                                              float(cam_t_full[2]),
+                                              float(cam_t_full[0]),
+                                              float(cam_t_full[1]))
+        if u_ann is not None and u_transl is not None and conf > 0.1:
+            err_transl = float(np.sqrt((u_transl - u_ann)**2 + (v_transl - v_ann)**2))
+            reproj_errors_transl.append(err_transl)
 
         joint_report_rows.append({
             'ji': ji, 'name': jname,
@@ -1014,20 +1020,19 @@ def dump_sample_diagnostics(
     tz_solved_mean   = float(np.mean(all_tz_solved))   if all_tz_solved else None
     tz_solved_std    = float(np.std(all_tz_solved))    if all_tz_solved else None
 
-    # Reprojection error using solved tz
+    # Reprojection error using solved tz (with cam_t_full[0:2] for tx/ty).
+    # tz_solved_median is the median absolute depth back-projected from kp_orig + j3d_abs.
+    # tx/ty are fixed to cam_t_full to avoid the broken (pelvis_2d-cx)*tz/fl formula.
     if tz_solved_median is not None:
-        _tx_s = (float(pelvis_2d[0]) - cx_assumed) * tz_solved_median / fl_x if pelvis_2d is not None else 0.0
-        _ty_s = (float(pelvis_2d[1]) - cy_assumed) * tz_solved_median / fl_y if pelvis_2d is not None else 0.0
         for row in joint_report_rows:
             ji = row['ji']
             j_cent = smpl_joints_centred[ji]
             u_ann, v_ann, conf = row['u_ann'], row['v_ann'], row['conf']
             if u_ann is not None and conf > 0.1:
-                u_s, v_s = None, None
                 depth = j_cent[2] + tz_solved_median
                 if depth > 0:
-                    u_s = cx_assumed + fl_x * (j_cent[0] + _tx_s) / depth
-                    v_s = cy_assumed + fl_y * (j_cent[1] + _ty_s) / depth
+                    u_s = cx_assumed + fl_x * (j_cent[0] + float(cam_t_full[0])) / depth
+                    v_s = cy_assumed + fl_y * (j_cent[1] + float(cam_t_full[1])) / depth
                     err_s = float(np.sqrt((u_s - u_ann)**2 + (v_s - v_ann)**2))
                     reproj_errors_solved.append(err_s)
                     row['u_solved'] = round(u_s, 1)
@@ -1113,31 +1118,33 @@ def dump_sample_diagnostics(
                             f'2*fl/h  mean_err={mean_err_b:.0f}px', fontsize=8)
     axes_diag[1].axis('off')
 
-    # Panel 2: tz_from_translation (dataset ground-truth depth)
-    if tz_from_translation is not None and tz_from_translation > 0:
-        _tx_t2 = (float(pelvis_2d[0]) - cx_assumed) * tz_from_translation / fl_x if pelvis_2d is not None else 0.0
-        _ty_t2 = (float(pelvis_2d[1]) - cy_assumed) * tz_from_translation / fl_y if pelvis_2d is not None else 0.0
-        img_tz_t = draw_joints_on_img(full_img_diag, smpl_joints_centred,
-                                       tz_from_translation, _tx_t2, _ty_t2, color=(255, 128, 0))
-        mean_err_t = float(np.mean(reproj_errors_transl)) if reproj_errors_transl else float('nan')
-        axes_diag[2].imshow(img_tz_t)
-        axes_diag[2].set_title(f'tz_translation={tz_from_translation:.2f}m\n'
-                                f'item[translation][2]  err={mean_err_t:.0f}px', fontsize=8)
-    else:
-        axes_diag[2].imshow(full_img_diag)
-        axes_diag[2].set_title('tz_translation\n(not available)', fontsize=8)
+    # Panel 2: cam_t_full = pelvis_3d + translation (what the renderer actually uses).
+    # tx/ty come directly from cam_t_full, NOT from back-projecting pelvis_2d.
+    # This is the ground-truth reprojection check for the fixed renderer.
+    img_tz_t = draw_joints_on_img(full_img_diag, smpl_joints_centred,
+                                   float(cam_t_full[2]),
+                                   float(cam_t_full[0]),
+                                   float(cam_t_full[1]),
+                                   color=(255, 128, 0))
+    mean_err_t = float(np.mean(reproj_errors_transl)) if reproj_errors_transl else float('nan')
+    axes_diag[2].imshow(img_tz_t)
+    axes_diag[2].set_title(f'cam_t_full tz={cam_t_full[2]:.2f}m\n'
+                            f'pelvis3d+transl  err={mean_err_t:.0f}px', fontsize=8)
     axes_diag[2].axis('off')
 
-    # Panel 3: tz_solved (median across joints)
+    # Panel 3: tz_solved — back-projected depth from absolute joints (j3d_orig + translation).
+    # tx/ty are fixed to cam_t_full[0:2] (not re-derived from pelvis_2d and tz_solved).
+    # tz_solved_median ≈ translation[2] when joints + translation correctly explain kp_orig.
     if tz_solved_median is not None and tz_solved_median > 0:
-        _tx_s2 = (float(pelvis_2d[0]) - cx_assumed) * tz_solved_median / fl_x if pelvis_2d is not None else 0.0
-        _ty_s2 = (float(pelvis_2d[1]) - cy_assumed) * tz_solved_median / fl_y if pelvis_2d is not None else 0.0
         img_tz_s = draw_joints_on_img(full_img_diag, smpl_joints_centred,
-                                       tz_solved_median, _tx_s2, _ty_s2, color=(255, 0, 128))
+                                       tz_solved_median,
+                                       float(cam_t_full[0]),   # fixed tx from cam_t_full
+                                       float(cam_t_full[1]),   # fixed ty from cam_t_full
+                                       color=(255, 0, 128))
         mean_err_s = float(np.mean(reproj_errors_solved)) if reproj_errors_solved else float('nan')
         axes_diag[3].imshow(img_tz_s)
         axes_diag[3].set_title(f'tz_solved={tz_solved_median:.2f}m\n'
-                                f'median({len(all_tz_solved)} joints)  err={mean_err_s:.0f}px', fontsize=8)
+                                f'abs backproj ({len(all_tz_solved)}j)  err={mean_err_s:.0f}px', fontsize=8)
     else:
         axes_diag[3].imshow(full_img_diag)
         axes_diag[3].set_title('tz_solved\n(insufficient data)', fontsize=8)
@@ -1177,7 +1184,7 @@ def dump_sample_diagnostics(
 
     fig_diag.suptitle(
         f'REPROJECTION DIAGNOSTICS  sample_{sample_idx:03d}_ds{ds_idx}\n'
-        f'Green=tz_bbox  Orange=tz_translation  Pink=tz_solved  Yellow=kp_orig',
+        f'Green=tz_bbox  Orange=cam_t_full(pelvis+transl)  Pink=tz_solved(abs backproj)  Yellow=kp_orig',
         fontsize=9
     )
     fig_diag.tight_layout()
