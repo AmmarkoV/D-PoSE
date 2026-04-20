@@ -713,6 +713,43 @@ def run_visual_tests(args, hparams, ds, renderer, faces,
     test_04()
     test_05()
     test_06()
+    """
+Traceback (most recent call last):
+  File "/home/user/workspace/MHRD-Pose/debug_vis.py", line 1185, in <module>
+    main()
+  File "/home/user/workspace/MHRD-Pose/debug_vis.py", line 849, in main
+    run_visual_tests(args, hparams, ds, renderer, faces,
+  File "/home/user/workspace/MHRD-Pose/debug_vis.py", line 715, in run_visual_tests
+    test_06()
+  File "/home/user/workspace/MHRD-Pose/debug_vis.py", line 478, in test_06
+    full_render = render_mesh_on_image(_fi_r, v, cam_t_full, canvas, [fl_val, fl_val])
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/workspace/MHRD-Pose/debug_vis.py", line 100, in render_mesh_on_image
+    rendered = renderer(
+               ^^^^^^^^^
+  File "/home/user/workspace/train/utils/renderer.py", line 290, in __call__
+    color, rend_depth = self.renderer.render(scene, flags=pyrender.RenderFlags.RGBA)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/workspace/venv/lib/python3.12/site-packages/pyrender/offscreen.py", line 86, in render
+    self._platform.make_current()
+  File "/home/user/workspace/venv/lib/python3.12/site-packages/pyrender/platforms/egl.py", line 196, in make_current
+    assert eglMakeCurrent(
+           ^^^^^^^^^^^^^^^
+  File "/home/user/workspace/venv/lib/python3.12/site-packages/OpenGL/error.py", line 228, in glCheckError
+    raise GLError(
+OpenGL.error.GLError: GLError(
+        err = 12296,
+        baseOperation = eglMakeCurrent,
+        cArguments = (
+                <OpenGL._opaque.EGLDisplay_pointer object at 0x7f4e6c25c1d0>,
+                <OpenGL._opaque.EGLSurface_pointer object at 0x7f4e97b82a50>,
+                <OpenGL._opaque.EGLSurface_pointer object at 0x7f4e97b82a50>,
+                <OpenGL._opaque.EGLContext_pointer object at 0x7f4e6c0de6d0>,
+        ),
+        result = 0
+)
+
+    """
     test_07()
     test_08()
     test_09()
