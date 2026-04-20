@@ -256,8 +256,8 @@ def convert_pare_to_full_img_cam(pare_cam, bbox_height, bbox_center, img_w, img_
 # Visual unit tests
 # ---------------------------------------------------------------------------
 
-def run_visual_tests(args, hparams, ds, renderer, faces,
-                     compute_smpl_joints, compute_smpl_pelvis):
+def run_visual_tests(args, hparams, ds, renderer, faces, smpl_faces,
+                     compute_smpl_joints, compute_smpl_pelvis, compute_smpl_verts):
     """
     Generate diagnostic PNGs that test individual operations and hypotheses
     about coordinate systems, vertex scales, camera placement, and rendering.
@@ -469,15 +469,12 @@ def run_visual_tests(args, hparams, ds, renderer, faces,
         cam_t_full = np.array([tx_full, ty_full, tz], np.float32)
         canvas = np.full((fh, fw, 3), 200, dtype=np.uint8)
 
-        # Fresh renderer at full resolution (EGL contexts can't be resized)
-        from train.utils.renderer import Renderer as _RendererFI
-        _fi_r = _RendererFI(focal_length=fl_val, img_res=max(fh, fw),
-                             faces=faces, mesh_color='pinkish')
-        _fi_r.renderer = _pyrender.OffscreenRenderer(fw, fh, point_size=1.0)
-        _fi_r.camera_center = [fw // 2, fh // 2]
-        full_render = render_mesh_on_image(_fi_r, v, cam_t_full, canvas, [fl_val, fl_val])
-        _fi_r.renderer.delete()
-        del _fi_r
+        # Use stateless renderer — avoids creating a second EGL context alongside
+        # the shared renderer, which corrupts its context on some EGL drivers.
+        full_render = render_mesh_stateless(
+            v, faces, cam_t_full, canvas, [fl_val, fl_val],
+            camera_center=[fw // 2, fh // 2],
+        )
 
         # Also crop render for side-by-side comparison
         cam_t_crop = np.array([0., 0., tz], np.float32)
@@ -572,6 +569,7 @@ def run_visual_tests(args, hparams, ds, renderer, faces,
         fig.suptitle(f'TEST 08: SMPLX canonical mesh (ground-truth renderer orientation)\n'
                      f'pelvis={sp.round(3)}  Y∈[{vmin[1]:.3f},{vmax[1]:.3f}]', fontsize=9)
         path = _save(fig, 'test_08_smplx_canonical.png')
+        sx_renderer.renderer.delete()
         del sx_renderer, smplx_model
         print(f'[08] SMPLX canonical  →  {path}')
 
@@ -706,6 +704,54 @@ def run_visual_tests(args, hparams, ds, renderer, faces,
         path = _save(fig, 'test_11_renderer_axes.png')
         print(f'[11] Renderer axes  →  {path}')
 
+    # ── TEST 12: SMPL vs MHR rendering parity ─────────────────────────────
+    def test_12():
+        """Render SMPL (barycentric-reconstructed) and MHR meshes on a black
+        background, then quantify rendering discrepancy via mask IoU and a
+        per-pixel difference map."""
+        pelvis = compute_smpl_pelvis(gt_verts_np)
+        v_mhr  = gt_verts_np - pelvis                      # [V_mhr, 3]
+        v_smpl = compute_smpl_verts(gt_verts_np) - pelvis  # [6890, 3]
+
+        cam_t = np.array([0., 0., tz], np.float32)
+        black = np.zeros((224, 224, 3), dtype=np.uint8)
+
+        r_mhr  = render_mesh_stateless(v_mhr,  faces,      cam_t, black.copy(),
+                                       [fl_crop, fl_crop], mesh_color=(0.85, 0.45, 0.45))
+        r_smpl = render_mesh_stateless(v_smpl, smpl_faces, cam_t, black.copy(),
+                                       [fl_crop, fl_crop], mesh_color=(0.45, 0.60, 0.90))
+
+        mask_mhr  = r_mhr.sum(2)  > 10
+        mask_smpl = r_smpl.sum(2) > 10
+        union     = mask_mhr | mask_smpl
+        intersect = mask_mhr & mask_smpl
+        iou       = intersect.sum() / max(union.sum(), 1)
+
+        overlay = np.zeros((224, 224, 3), dtype=np.uint8)
+        overlay[mask_mhr,  0] = 210   # red channel  → MHR (and overlap → purple)
+        overlay[mask_smpl, 2] = 210   # blue channel → SMPL (and overlap → purple)
+
+        diff = np.abs(r_mhr.astype(np.float32) - r_smpl.astype(np.float32)).mean(2)
+        mean_diff = float(diff[union].mean()) if union.any() else 0.0
+
+        fig, axes = plt.subplots(1, 5, figsize=(22, 5))
+        axes[0].imshow(img_crop);  axes[0].set_title('Input crop');         axes[0].axis('off')
+        axes[1].imshow(r_mhr);     axes[1].set_title('MHR mesh (red)');     axes[1].axis('off')
+        axes[2].imshow(r_smpl);    axes[2].set_title('SMPL mesh (blue)');   axes[2].axis('off')
+        axes[3].imshow(overlay)
+        axes[3].set_title(f'Overlay  IoU={iou:.4f}\nRed=MHR  Blue=SMPL  Purple=both')
+        axes[3].axis('off')
+        im = axes[4].imshow(diff, cmap='hot', vmin=0)
+        plt.colorbar(im, ax=axes[4], fraction=0.04)
+        axes[4].set_title(f'|MHR − SMPL| pixel diff\nmean(union)={mean_diff:.1f}')
+        axes[4].axis('off')
+
+        fig.suptitle(f'TEST 12: SMPL vs MHR rendering parity\n'
+                     f'IoU={iou:.4f}  union_px={union.sum()}  '
+                     f'MHR_px={mask_mhr.sum()}  SMPL_px={mask_smpl.sum()}', fontsize=10)
+        path = _save(fig, 'test_12_smpl_mhr_parity.png')
+        print(f'[12] SMPL vs MHR parity  IoU={iou:.4f}  mean_diff={mean_diff:.1f}  →  {path}')
+
     # ── run all ───────────────────────────────────────────────────────────
     test_01()
     test_02()
@@ -713,88 +759,12 @@ def run_visual_tests(args, hparams, ds, renderer, faces,
     test_04()
     test_05()
     test_06()
-    """
-Traceback (most recent call last):
-  File "/home/user/workspace/MHRD-Pose/debug_vis.py", line 1185, in <module>
-    main()
-  File "/home/user/workspace/MHRD-Pose/debug_vis.py", line 849, in main
-    run_visual_tests(args, hparams, ds, renderer, faces,
-  File "/home/user/workspace/MHRD-Pose/debug_vis.py", line 715, in run_visual_tests
-    test_06()
-  File "/home/user/workspace/MHRD-Pose/debug_vis.py", line 478, in test_06
-    full_render = render_mesh_on_image(_fi_r, v, cam_t_full, canvas, [fl_val, fl_val])
-                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/user/workspace/MHRD-Pose/debug_vis.py", line 100, in render_mesh_on_image
-    rendered = renderer(
-               ^^^^^^^^^
-  File "/home/user/workspace/train/utils/renderer.py", line 290, in __call__
-    color, rend_depth = self.renderer.render(scene, flags=pyrender.RenderFlags.RGBA)
-                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/user/workspace/venv/lib/python3.12/site-packages/pyrender/offscreen.py", line 86, in render
-    self._platform.make_current()
-  File "/home/user/workspace/venv/lib/python3.12/site-packages/pyrender/platforms/egl.py", line 196, in make_current
-    assert eglMakeCurrent(
-           ^^^^^^^^^^^^^^^
-  File "/home/user/workspace/venv/lib/python3.12/site-packages/OpenGL/error.py", line 228, in glCheckError
-    raise GLError(
-OpenGL.error.GLError: GLError(
-        err = 12296,
-        baseOperation = eglMakeCurrent,
-        cArguments = (
-                <OpenGL._opaque.EGLDisplay_pointer object at 0x7f4e6c25c1d0>,
-                <OpenGL._opaque.EGLSurface_pointer object at 0x7f4e97b82a50>,
-                <OpenGL._opaque.EGLSurface_pointer object at 0x7f4e97b82a50>,
-                <OpenGL._opaque.EGLContext_pointer object at 0x7f4e6c0de6d0>,
-        ),
-        result = 0
-)
-
-    """
     test_07()
     test_08()
     test_09()
-    """
-
-  File "/home/user/workspace/MHRD-Pose/debug_vis.py", line 1145, in <module>
-    main()
-  File "/home/user/workspace/MHRD-Pose/debug_vis.py", line 809, in main
-    run_visual_tests(args, hparams, ds, renderer, faces,
-  File "/home/user/workspace/MHRD-Pose/debug_vis.py", line 718, in run_visual_tests
-    test_09()
-  File "/home/user/workspace/MHRD-Pose/debug_vis.py", line 584, in test_09
-    rendered = _render(v, cam_t)
-               ^^^^^^^^^^^^^^^^^
-  File "/home/user/workspace/MHRD-Pose/debug_vis.py", line 321, in _render
-    return render_mesh_on_image(renderer, verts, cam_t.copy(), bg.copy(),
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/user/workspace/MHRD-Pose/debug_vis.py", line 100, in render_mesh_on_image
-    rendered = renderer(
-               ^^^^^^^^^
-  File "/home/user/workspace/train/utils/renderer.py", line 290, in __call__
-    color, rend_depth = self.renderer.render(scene, flags=pyrender.RenderFlags.RGBA)
-                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/user/workspace/venv/lib/python3.12/site-packages/pyrender/offscreen.py", line 86, in render
-    self._platform.make_current()
-  File "/home/user/workspace/venv/lib/python3.12/site-packages/pyrender/platforms/egl.py", line 196, in make_current
-    assert eglMakeCurrent(
-           ^^^^^^^^^^^^^^^
-  File "/home/user/workspace/venv/lib/python3.12/site-packages/OpenGL/error.py", line 228, in glCheckError
-    raise GLError(
-OpenGL.error.GLError: GLError(
-        err = 12296,
-        baseOperation = eglMakeCurrent,
-        cArguments = (
-                <OpenGL._opaque.EGLDisplay_pointer object at 0x7f2b875a9c50>,
-                <OpenGL._opaque.EGLSurface_pointer object at 0x7f2b875924d0>,
-                <OpenGL._opaque.EGLSurface_pointer object at 0x7f2b875924d0>,
-                <OpenGL._opaque.EGLContext_pointer object at 0x7f2b875aa5d0>,
-        ),
-        result = 0
-)
-
-    """
     test_10()
     test_11()
+    test_12()
 
     print(f'\n{sep}\nAll tests done  →  {out_dir}\n{sep}\n')
 
@@ -859,15 +829,19 @@ def main():
         _J_reg = np.array(_J_reg.todense()).astype(np.float32)
     else:
         _J_reg = np.array(_J_reg).astype(np.float32)  # [24, 6890]
+    smpl_faces = _smpl_data['f'].astype(np.int32)     # [13776, 3]
 
-    def compute_smpl_joints(verts_m):
-        """Compute all 24 SMPL joints from MHR vertices [V,3] in metres."""
+    def compute_smpl_verts(verts_m):
+        """Reconstruct 6890 SMPL vertex positions from MHR vertices [V,3] via barycentric mapping."""
         v0 = verts_m[_smpl_tri_vids[:, 0]]
         v1 = verts_m[_smpl_tri_vids[:, 1]]
         v2 = verts_m[_smpl_tri_vids[:, 2]]
-        smpl_verts = (_smpl_baryc[:, 0:1]*v0 + _smpl_baryc[:, 1:2]*v1
-                      + _smpl_baryc[:, 2:3]*v2)  # [6890, 3]
-        return _J_reg @ smpl_verts  # [24, 3]
+        return (_smpl_baryc[:, 0:1]*v0 + _smpl_baryc[:, 1:2]*v1
+                + _smpl_baryc[:, 2:3]*v2)  # [6890, 3]
+
+    def compute_smpl_joints(verts_m):
+        """Compute all 24 SMPL joints from MHR vertices [V,3] in metres."""
+        return _J_reg @ compute_smpl_verts(verts_m)  # [24, 3]
 
     def compute_smpl_pelvis(verts_m):
         """Compute SMPL pelvis position (joint 0) from MHR vertices [V,3] in metres."""
@@ -883,8 +857,8 @@ def main():
 
     # ---- test mode ----------------------------------------------------------
     if args.test:
-        run_visual_tests(args, hparams, ds, renderer, faces,
-                         compute_smpl_joints, compute_smpl_pelvis)
+        run_visual_tests(args, hparams, ds, renderer, faces, smpl_faces,
+                         compute_smpl_joints, compute_smpl_pelvis, compute_smpl_verts)
         return
 
     # ---- optional model -----------------------------------------------------
