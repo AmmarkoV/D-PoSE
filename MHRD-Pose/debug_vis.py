@@ -811,6 +811,569 @@ def run_visual_tests(args, hparams, ds, renderer, faces, smpl_faces,
 
 
 # ---------------------------------------------------------------------------
+# Per-sample diagnostic dump
+# ---------------------------------------------------------------------------
+
+def dump_sample_diagnostics(
+    out_dir,
+    sample_idx,
+    ds_idx,
+    item,                   # raw dataset item dict
+    gt_verts_orig,          # [V, 3] MHR vertices BEFORE pelvis subtraction
+    gt_verts_centred,       # [V, 3] MHR vertices AFTER pelvis subtraction
+    pelvis_3d,              # [3] pelvis position in original vertex space
+    smpl_joints_orig,       # [24, 3] SMPL joints BEFORE pelvis subtraction
+    smpl_joints_centred,    # [24, 3] SMPL joints AFTER pelvis subtraction
+    smpl_verts,             # [6890, 3] SMPL vertices (barycentric reconstruct)
+    fl_val,                 # focal length fx (used for rendering)
+    img_w_full,
+    img_h_full,
+    bbox_scale,             # item['scale']  — may include augmentation
+    bbox_center,            # [2] bbox center in full-image pixels
+    cam_t_full,             # [3] camera translation actually used for rendering
+    faces,                  # MHR face indices
+    smpl_faces,             # SMPL face indices
+):
+    """
+    Write a comprehensive set of diagnostic files for one sample.
+
+    Files produced (all in <out_dir>/diag/):
+      sample_{i}_ds{j}_diag.json   — all scalars, formulas, comparison tables
+      sample_{i}_ds{j}_diag.npz    — all arrays (vertices, joints, keypoints…)
+      sample_{i}_ds{j}_reproj.png  — reprojection figure with 4 tz hypotheses
+      sample_{i}_ds{j}_diag.txt    — human-readable text report
+
+    Key questions being probed
+    ──────────────────────────
+    Q1. Is tz_bbox (= 2*fl/bbox_height) the right depth, or is it off?
+        Compared against:
+          • tz_from_translation  — item['translation'][2] if present (body z in cam space)
+          • tz_from_pelvis_z     — pelvis_3d[2] (only meaningful if verts have abs. pos.)
+          • tz_solved_median     — tz that minimises reprojection of SMPL joints to kp_orig
+
+    Q2. Does the principal-point assumption cx=fw/2, cy=fh/2 introduce error?
+        We log cx_assumed vs cx from cam_int if the full matrix is available.
+
+    Q3. Do the vertices already encode the camera-space translation, or are they
+        body-local (translation zeroed)?  → indicated by pelvis_3d[2] vs tz_bbox.
+    """
+    import json, cv2 as _cv2
+
+    diag_dir = os.path.join(out_dir, 'diag')
+    os.makedirs(diag_dir, exist_ok=True)
+    prefix = os.path.join(diag_dir, f'sample_{sample_idx:03d}_ds{ds_idx}')
+
+    # ── Joint name table (SMPL-24, matches train/core/constants.py SMPL_24) ──
+    SMPL_JOINT_NAMES = [
+        'Pelvis', 'L_Hip', 'R_Hip', 'Spine',
+        'L_Knee', 'R_Knee', 'Thorax', 'L_Ankle',
+        'R_Ankle', 'Thorax_up', 'L_Toe', 'R_Toe',
+        'Neck', 'L_Collar', 'R_Collar', 'Jaw',
+        'L_Shoulder', 'R_Shoulder', 'L_Elbow', 'R_Elbow',
+        'L_Wrist', 'R_Wrist', 'L_Hand', 'R_Hand',
+    ]
+
+    # ── Camera parameters ────────────────────────────────────────────────────
+
+    # item['focal_length'] = [fx, fy] from cam_int diagonal (training mode).
+    # We do NOT have cx/cy from the dataset item; we must assume image centre.
+    # Dump both the assumed value AND any available cam_int matrix.
+    focal_length_item = to_numpy(item['focal_length']) if 'focal_length' in item else None
+    fl_x = float(focal_length_item[0]) if focal_length_item is not None else fl_val
+    fl_y = float(focal_length_item[1]) if focal_length_item is not None else fl_val
+
+    # Assumed principal point (may differ from calibrated value)
+    cx_assumed = img_w_full / 2.0
+    cy_assumed = img_h_full / 2.0
+
+    # item['cam_ext'] = 4×3 or 4×4 camera-extrinsics stored by the dataset.
+    # For AGORA / BEDLAM this is the body-root-to-camera transform.
+    cam_ext_np = to_numpy(item['cam_ext']) if 'cam_ext' in item else None
+
+    # item['translation'] = cam_ext[:, 3] + optional trans_cam:
+    # the body's 3D translation in CAMERA SPACE (metres).
+    # translation[2] is the depth candidate tz_from_translation.
+    translation_np = to_numpy(item['translation']) if 'translation' in item else None
+
+    # ── tz candidates ────────────────────────────────────────────────────────
+
+    bbox_height = bbox_scale * 200.0  # full-image bbox height in pixels
+
+    # Candidate 1: weak-perspective formula (current rendering approach)
+    tz_bbox = 2.0 * fl_val / bbox_height
+
+    # Candidate 2: Z component of pelvis before subtraction.
+    # Meaningful only if vertices carry the absolute camera-space translation
+    # (i.e. preconvert_mhr stored them with cam_trans applied).
+    # If body-local, this will be close to 0 (pelvis ≈ origin of the model).
+    tz_pelvis_z = float(pelvis_3d[2])
+
+    # Candidate 3: body translation Z from dataset (ground truth depth)
+    tz_from_translation = float(translation_np[2]) if translation_np is not None else None
+
+    # Candidate 4: solve for tz that makes SMPL joints project to kp_orig.
+    # Uses the pinhole formula (after 180°X rotation and tx-negation inside
+    # render_mesh_stateless; derivation matches the projection comment in
+    # render_mesh_stateless):
+    #   u = cx + fx * (x + tx) / (z + tz)
+    #   v = cy + fy * (y + ty) / (z + tz)
+    # where tx = (pelvis_2d_x - cx) * tz / fx  (depends on tz — circular!)
+    #
+    # To break the circularity we use ABSOLUTE joint positions (before pelvis
+    # subtraction). For an absolute joint at (X, Y, Z):
+    #   u = cx + fx * X / Z   →   Z = fx * X / (u - cx)
+    # This is independent of tz. The median over all confident joints gives
+    # the "solved" depth.
+    kp_orig_np = to_numpy(item['keypoints_orig']) if 'keypoints_orig' in item else None
+
+    tz_solved_per_joint_x = []   # solved depth from u equation
+    tz_solved_per_joint_y = []   # solved depth from v equation
+    reproj_errors_bbox   = []    # |projected − annotation| in pixels, tz_bbox
+    reproj_errors_transl = []    # same, tz_from_translation
+    reproj_errors_solved = []    # same, tz_solved_median (filled after solving)
+
+    joint_report_rows = []  # for text report
+
+    for ji, jname in enumerate(SMPL_JOINT_NAMES):
+        j3d_orig  = smpl_joints_orig[ji]     # absolute camera-space [X,Y,Z]
+        j3d_cent  = smpl_joints_centred[ji]  # pelvis-centred [x,y,z]
+
+        conf = float(kp_orig_np[ji, 2]) if kp_orig_np is not None and ji < kp_orig_np.shape[0] else 0.0
+        u_ann = float(kp_orig_np[ji, 0]) if kp_orig_np is not None and ji < kp_orig_np.shape[0] else None
+        v_ann = float(kp_orig_np[ji, 1]) if kp_orig_np is not None and ji < kp_orig_np.shape[0] else None
+
+        # Solve depth from absolute position + 2D annotation
+        # (valid only when the vertex X,Y,Z are in absolute camera space)
+        tz_solved_x = tz_solved_y = None
+        if u_ann is not None and abs(u_ann - cx_assumed) > 1.0 and conf > 0.1:
+            denom_x = u_ann - cx_assumed
+            tz_solved_x = fl_x * j3d_orig[0] / denom_x if abs(denom_x) > 1 else None
+        if v_ann is not None and abs(v_ann - cy_assumed) > 1.0 and conf > 0.1:
+            denom_y = v_ann - cy_assumed
+            tz_solved_y = fl_y * j3d_orig[1] / denom_y if abs(denom_y) > 1 else None
+
+        if tz_solved_x is not None and 0.5 < tz_solved_x < 50.0:
+            tz_solved_per_joint_x.append(tz_solved_x)
+        if tz_solved_y is not None and 0.5 < tz_solved_y < 50.0:
+            tz_solved_per_joint_y.append(tz_solved_y)
+
+        # Project centred joints using tz_bbox (the formula we're currently using)
+        def project_centred(j_cent, tz_cand, _tx, _ty):
+            """Project a pelvis-centred joint using a given tz candidate."""
+            depth = j_cent[2] + tz_cand
+            if depth <= 0:
+                return None, None
+            u = cx_assumed + fl_x * (j_cent[0] + _tx) / depth
+            v = cy_assumed + fl_y * (j_cent[1] + _ty) / depth
+            return u, v
+
+        # Compute tx, ty for tz_bbox (used in current rendering)
+        pelvis_2d = None
+        if kp_orig_np is not None and kp_orig_np.shape[0] >= 3:
+            pelvis_2d = (kp_orig_np[1, :2] + kp_orig_np[2, :2]) / 2.0
+        _tx_bbox = (float(pelvis_2d[0]) - cx_assumed) * tz_bbox / fl_x if pelvis_2d is not None else 0.0
+        _ty_bbox = (float(pelvis_2d[1]) - cy_assumed) * tz_bbox / fl_y if pelvis_2d is not None else 0.0
+
+        u_bbox, v_bbox = project_centred(j3d_cent, tz_bbox, _tx_bbox, _ty_bbox)
+
+        err_bbox = None
+        if u_ann is not None and u_bbox is not None and conf > 0.1:
+            err_bbox = float(np.sqrt((u_bbox - u_ann)**2 + (v_bbox - v_ann)**2))
+            reproj_errors_bbox.append(err_bbox)
+
+        # Compute tx, ty for tz_from_translation (ground-truth depth)
+        u_transl = v_transl = err_transl = None
+        if tz_from_translation is not None and tz_from_translation > 0:
+            _tx_t = (float(pelvis_2d[0]) - cx_assumed) * tz_from_translation / fl_x if pelvis_2d is not None else 0.0
+            _ty_t = (float(pelvis_2d[1]) - cy_assumed) * tz_from_translation / fl_y if pelvis_2d is not None else 0.0
+            u_transl, v_transl = project_centred(j3d_cent, tz_from_translation, _tx_t, _ty_t)
+            if u_ann is not None and u_transl is not None and conf > 0.1:
+                err_transl = float(np.sqrt((u_transl - u_ann)**2 + (v_transl - v_ann)**2))
+                reproj_errors_transl.append(err_transl)
+
+        joint_report_rows.append({
+            'ji': ji, 'name': jname,
+            'j3d_orig':  [round(float(v), 4) for v in j3d_orig],
+            'j3d_cent':  [round(float(v), 4) for v in j3d_cent],
+            'u_ann': round(u_ann, 1) if u_ann is not None else None,
+            'v_ann': round(v_ann, 1) if v_ann is not None else None,
+            'conf': round(conf, 3),
+            'u_bbox': round(u_bbox, 1) if u_bbox is not None else None,
+            'v_bbox': round(v_bbox, 1) if v_bbox is not None else None,
+            'err_bbox_px': round(err_bbox, 1) if err_bbox is not None else None,
+            'u_transl': round(u_transl, 1) if u_transl is not None else None,
+            'v_transl': round(v_transl, 1) if v_transl is not None else None,
+            'err_transl_px': round(err_transl, 1) if err_transl is not None else None,
+            'tz_solved_x': round(tz_solved_x, 3) if tz_solved_x is not None else None,
+            'tz_solved_y': round(tz_solved_y, 3) if tz_solved_y is not None else None,
+        })
+
+    # Median solved tz across all joints (both x and y equations)
+    all_tz_solved = tz_solved_per_joint_x + tz_solved_per_joint_y
+    tz_solved_median = float(np.median(all_tz_solved)) if all_tz_solved else None
+    tz_solved_mean   = float(np.mean(all_tz_solved))   if all_tz_solved else None
+    tz_solved_std    = float(np.std(all_tz_solved))    if all_tz_solved else None
+
+    # Reprojection error using solved tz
+    if tz_solved_median is not None:
+        _tx_s = (float(pelvis_2d[0]) - cx_assumed) * tz_solved_median / fl_x if pelvis_2d is not None else 0.0
+        _ty_s = (float(pelvis_2d[1]) - cy_assumed) * tz_solved_median / fl_y if pelvis_2d is not None else 0.0
+        for row in joint_report_rows:
+            ji = row['ji']
+            j_cent = smpl_joints_centred[ji]
+            u_ann, v_ann, conf = row['u_ann'], row['v_ann'], row['conf']
+            if u_ann is not None and conf > 0.1:
+                u_s, v_s = None, None
+                depth = j_cent[2] + tz_solved_median
+                if depth > 0:
+                    u_s = cx_assumed + fl_x * (j_cent[0] + _tx_s) / depth
+                    v_s = cy_assumed + fl_y * (j_cent[1] + _ty_s) / depth
+                    err_s = float(np.sqrt((u_s - u_ann)**2 + (v_s - v_ann)**2))
+                    reproj_errors_solved.append(err_s)
+                    row['u_solved'] = round(u_s, 1)
+                    row['v_solved'] = round(v_s, 1)
+                    row['err_solved_px'] = round(err_s, 1)
+
+    # ── Vertex statistics ─────────────────────────────────────────────────────
+
+    # Original vertices (before pelvis subtraction): do they carry absolute pos?
+    verts_min  = gt_verts_orig.min(axis=0)
+    verts_max  = gt_verts_orig.max(axis=0)
+    verts_mean = gt_verts_orig.mean(axis=0)
+    body_height_m = float(verts_max[1] - verts_min[1])   # Y-axis extent (metres)
+
+    smpl_verts_min = smpl_verts.min(axis=0)
+    smpl_verts_max = smpl_verts.max(axis=0)
+    smpl_body_height_m = float(smpl_verts_max[1] - smpl_verts_min[1])
+
+    # ── SMPL joints 2D projection with all tz candidates ─────────────────────
+    # Load original full image once
+    try:
+        _bgr = _cv2.imread(item['imgname'])
+        full_img_diag = _cv2.cvtColor(_bgr, _cv2.COLOR_BGR2RGB) if _bgr is not None \
+                        else np.full((int(img_h_full), int(img_w_full), 3), 128, np.uint8)
+    except Exception:
+        full_img_diag = np.full((int(img_h_full), int(img_w_full), 3), 128, np.uint8)
+
+    def draw_joints_on_img(img, joints_centred, tz_cand, tx_cand, ty_cand,
+                           color=(0, 255, 0), radius=5, label=None):
+        """Draw projected SMPL joints onto a copy of img."""
+        out = img.copy()
+        H_img, W_img = out.shape[:2]
+        for j_cent in joints_centred:
+            depth = j_cent[2] + tz_cand
+            if depth <= 0:
+                continue
+            ux = int(round(cx_assumed + fl_x * (j_cent[0] + tx_cand) / depth))
+            vy = int(round(cy_assumed + fl_y * (j_cent[1] + ty_cand) / depth))
+            if 0 <= ux < W_img and 0 <= vy < H_img:
+                _cv2.circle(out, (ux, vy), radius, color, -1)
+        if label:
+            _cv2.putText(out, label, (10, 30), _cv2.FONT_HERSHEY_SIMPLEX,
+                         1.0, color, 2, _cv2.LINE_AA)
+        return out
+
+    def draw_kp_orig(img, color=(255, 255, 0)):
+        """Draw kp_orig keypoints on img."""
+        out = img.copy()
+        H_img, W_img = out.shape[:2]
+        if kp_orig_np is None:
+            return out
+        for ji2 in range(kp_orig_np.shape[0]):
+            conf2 = kp_orig_np[ji2, 2]
+            if conf2 < 0.1:
+                continue
+            ux = int(round(kp_orig_np[ji2, 0]))
+            vy = int(round(kp_orig_np[ji2, 1]))
+            if 0 <= ux < W_img and 0 <= vy < H_img:
+                _cv2.circle(out, (ux, vy), 5, color, -1)
+        _cv2.putText(out, 'kp_orig (GT annot.)', (10, 30),
+                     _cv2.FONT_HERSHEY_SIMPLEX, 1.0, color, 2, _cv2.LINE_AA)
+        return out
+
+    # Build 4-panel reprojection figure
+    n_panels = 5
+    fig_diag, axes_diag = plt.subplots(1, n_panels,
+                                        figsize=(n_panels * int(img_w_full / 200),
+                                                 int(img_h_full / 200) + 1))
+
+    # Panel 0: kp_orig ground-truth annotations
+    axes_diag[0].imshow(draw_kp_orig(full_img_diag))
+    axes_diag[0].set_title('kp_orig\n(GT annotation)', fontsize=8)
+    axes_diag[0].axis('off')
+
+    # Panel 1: tz_bbox (current formula)
+    _tx_b = (float(pelvis_2d[0]) - cx_assumed) * tz_bbox / fl_x if pelvis_2d is not None else 0.0
+    _ty_b = (float(pelvis_2d[1]) - cy_assumed) * tz_bbox / fl_y if pelvis_2d is not None else 0.0
+    img_tz_bbox = draw_joints_on_img(full_img_diag, smpl_joints_centred, tz_bbox,
+                                      _tx_b, _ty_b, color=(0, 255, 0))
+    mean_err_b = float(np.mean(reproj_errors_bbox)) if reproj_errors_bbox else float('nan')
+    axes_diag[1].imshow(img_tz_bbox)
+    axes_diag[1].set_title(f'tz_bbox={tz_bbox:.2f}m\n'
+                            f'2*fl/h  mean_err={mean_err_b:.0f}px', fontsize=8)
+    axes_diag[1].axis('off')
+
+    # Panel 2: tz_from_translation (dataset ground-truth depth)
+    if tz_from_translation is not None and tz_from_translation > 0:
+        _tx_t2 = (float(pelvis_2d[0]) - cx_assumed) * tz_from_translation / fl_x if pelvis_2d is not None else 0.0
+        _ty_t2 = (float(pelvis_2d[1]) - cy_assumed) * tz_from_translation / fl_y if pelvis_2d is not None else 0.0
+        img_tz_t = draw_joints_on_img(full_img_diag, smpl_joints_centred,
+                                       tz_from_translation, _tx_t2, _ty_t2, color=(255, 128, 0))
+        mean_err_t = float(np.mean(reproj_errors_transl)) if reproj_errors_transl else float('nan')
+        axes_diag[2].imshow(img_tz_t)
+        axes_diag[2].set_title(f'tz_translation={tz_from_translation:.2f}m\n'
+                                f'item[translation][2]  err={mean_err_t:.0f}px', fontsize=8)
+    else:
+        axes_diag[2].imshow(full_img_diag)
+        axes_diag[2].set_title('tz_translation\n(not available)', fontsize=8)
+    axes_diag[2].axis('off')
+
+    # Panel 3: tz_solved (median across joints)
+    if tz_solved_median is not None and tz_solved_median > 0:
+        _tx_s2 = (float(pelvis_2d[0]) - cx_assumed) * tz_solved_median / fl_x if pelvis_2d is not None else 0.0
+        _ty_s2 = (float(pelvis_2d[1]) - cy_assumed) * tz_solved_median / fl_y if pelvis_2d is not None else 0.0
+        img_tz_s = draw_joints_on_img(full_img_diag, smpl_joints_centred,
+                                       tz_solved_median, _tx_s2, _ty_s2, color=(255, 0, 128))
+        mean_err_s = float(np.mean(reproj_errors_solved)) if reproj_errors_solved else float('nan')
+        axes_diag[3].imshow(img_tz_s)
+        axes_diag[3].set_title(f'tz_solved={tz_solved_median:.2f}m\n'
+                                f'median({len(all_tz_solved)} joints)  err={mean_err_s:.0f}px', fontsize=8)
+    else:
+        axes_diag[3].imshow(full_img_diag)
+        axes_diag[3].set_title('tz_solved\n(insufficient data)', fontsize=8)
+    axes_diag[3].axis('off')
+
+    # Panel 4: Text summary of all tz candidates
+    summary_lines = [
+        f'ds_idx={ds_idx}  sample={sample_idx}',
+        f'img={int(img_w_full)}x{int(img_h_full)}',
+        f'fl_x={fl_x:.1f}  fl_y={fl_y:.1f}',
+        f'cx_assumed={cx_assumed:.1f}  cy_assumed={cy_assumed:.1f}',
+        f'bbox_scale={bbox_scale:.4f}  bbox_h={bbox_height:.1f}px',
+        '',
+        '── tz candidates ──',
+        f'tz_bbox      = {tz_bbox:.3f} m   (2*fl/h)',
+        f'tz_pelvis_z  = {tz_pelvis_z:.3f} m   (pelvis_3d[2])',
+        f'tz_transl    = {tz_from_translation:.3f} m' if tz_from_translation else 'tz_transl    = N/A',
+        f'tz_solved    = {tz_solved_median:.3f} m   (median {len(all_tz_solved)}j)' if tz_solved_median else 'tz_solved    = N/A',
+        f'tz_solved_σ  = {tz_solved_std:.3f}' if tz_solved_std else '',
+        '',
+        '── mean reproj err ──',
+        f'tz_bbox      = {np.mean(reproj_errors_bbox):.1f} px' if reproj_errors_bbox else 'tz_bbox err  = N/A',
+        f'tz_transl    = {np.mean(reproj_errors_transl):.1f} px' if reproj_errors_transl else 'tz_transl err= N/A',
+        f'tz_solved    = {np.mean(reproj_errors_solved):.1f} px' if reproj_errors_solved else 'tz_solved err= N/A',
+        '',
+        '── vertex stats (orig) ──',
+        f'mhr_height_m = {body_height_m:.3f}',
+        f'smpl_height_m= {smpl_body_height_m:.3f}',
+        f'pelvis_3d[2] = {tz_pelvis_z:.3f}',
+        f'pelvis_3d    = [{pelvis_3d[0]:.3f},{pelvis_3d[1]:.3f},{pelvis_3d[2]:.3f}]',
+    ]
+    axes_diag[4].axis('off')
+    axes_diag[4].text(0.02, 0.98, '\n'.join(summary_lines),
+                       transform=axes_diag[4].transAxes,
+                       va='top', fontsize=7, family='monospace')
+    axes_diag[4].set_title('Summary', fontsize=8)
+
+    fig_diag.suptitle(
+        f'REPROJECTION DIAGNOSTICS  sample_{sample_idx:03d}_ds{ds_idx}\n'
+        f'Green=tz_bbox  Orange=tz_translation  Pink=tz_solved  Yellow=kp_orig',
+        fontsize=9
+    )
+    fig_diag.tight_layout()
+    fig_diag.savefig(f'{prefix}_reproj.png', dpi=80, bbox_inches='tight')
+    plt.close(fig_diag)
+
+    # ── JSON dump ─────────────────────────────────────────────────────────────
+    def _j(x):
+        """Convert numpy types to plain Python for JSON."""
+        if x is None: return None
+        if isinstance(x, np.ndarray): return x.tolist()
+        if isinstance(x, (np.floating, np.integer)): return x.item()
+        return x
+
+    diag_json = {
+        'sample_idx': sample_idx,
+        'ds_idx': int(ds_idx),
+        'imgname': item.get('imgname', ''),
+        'dataset_name': item.get('dataset_name', ''),
+        'image': {'w': int(img_w_full), 'h': int(img_h_full)},
+
+        # -- camera intrinsics --
+        'camera': {
+            'fl_x': fl_x, 'fl_y': fl_y,
+            'cx_assumed': cx_assumed, 'cy_assumed': cy_assumed,
+            # fl_x == cam_int[0,0], fl_y == cam_int[1,1];
+            # cx/cy from cam_int are NOT in the item — assumed = image centre.
+        },
+
+        # -- bounding box --
+        'bbox': {
+            'scale_augmented': bbox_scale,
+            'bbox_height_px': bbox_height,
+            'center_x': float(bbox_center[0]),
+            'center_y': float(bbox_center[1]),
+            'note': 'scale is item[scale] which may include augmentation sc factor',
+        },
+
+        # -- tz candidates --
+        'tz': {
+            'tz_bbox': tz_bbox,
+            'tz_pelvis_z': tz_pelvis_z,
+            'tz_from_translation': tz_from_translation,
+            'tz_solved_median': tz_solved_median,
+            'tz_solved_mean': tz_solved_mean,
+            'tz_solved_std': tz_solved_std,
+            'tz_solved_n_joints': len(all_tz_solved),
+            'tz_solved_per_joint_x': sorted(tz_solved_per_joint_x),
+            'tz_solved_per_joint_y': sorted(tz_solved_per_joint_y),
+        },
+
+        # -- reprojection errors --
+        'reproj': {
+            'tz_bbox_mean_px':   float(np.mean(reproj_errors_bbox))   if reproj_errors_bbox   else None,
+            'tz_bbox_max_px':    float(np.max(reproj_errors_bbox))    if reproj_errors_bbox   else None,
+            'tz_transl_mean_px': float(np.mean(reproj_errors_transl)) if reproj_errors_transl else None,
+            'tz_transl_max_px':  float(np.max(reproj_errors_transl))  if reproj_errors_transl else None,
+            'tz_solved_mean_px': float(np.mean(reproj_errors_solved)) if reproj_errors_solved else None,
+            'tz_solved_max_px':  float(np.max(reproj_errors_solved))  if reproj_errors_solved else None,
+        },
+
+        # -- vertex statistics --
+        'vertices': {
+            'mhr_count':          int(gt_verts_orig.shape[0]),
+            'smpl_count':         int(smpl_verts.shape[0]),
+            'mhr_min':            _j(verts_min),
+            'mhr_max':            _j(verts_max),
+            'mhr_mean':           _j(verts_mean),
+            'mhr_body_height_m':  body_height_m,
+            'smpl_body_height_m': smpl_body_height_m,
+            'pelvis_3d':          _j(pelvis_3d),
+            'note': ('pelvis_3d[2] near 0 → body-local verts (no abs. cam translation). '
+                     'pelvis_3d[2] > 1 → verts carry absolute camera-space position.'),
+        },
+
+        # -- cam_ext / translation from dataset --
+        'cam_ext':     _j(cam_ext_np),
+        'translation': _j(translation_np),
+
+        # -- per-joint table --
+        'joints': joint_report_rows,
+
+        # -- item keys (shapes) --
+        'item_keys': {
+            k: (list(v.shape) if isinstance(v, (torch.Tensor, np.ndarray)) else str(type(v)))
+            for k, v in item.items()
+        },
+    }
+
+    with open(f'{prefix}_diag.json', 'w') as fj:
+        json.dump(diag_json, fj, indent=2)
+
+    # ── NPZ dump ──────────────────────────────────────────────────────────────
+    np.savez_compressed(
+        f'{prefix}_diag.npz',
+        # MHR vertices (full resolution)
+        mhr_verts_orig      = gt_verts_orig.astype(np.float32),
+        mhr_verts_centred   = gt_verts_centred.astype(np.float32),
+        # SMPL vertices (6890)
+        smpl_verts          = smpl_verts.astype(np.float32),
+        # SMPL joints (24×3) – both absolute and pelvis-centred
+        smpl_joints_orig    = smpl_joints_orig.astype(np.float32),
+        smpl_joints_centred = smpl_joints_centred.astype(np.float32),
+        # Pelvis
+        pelvis_3d           = pelvis_3d.astype(np.float32),
+        # 2D keypoint annotations from dataset
+        kp_orig             = kp_orig_np.astype(np.float32) if kp_orig_np is not None
+                              else np.zeros((24, 3), np.float32),
+        # Camera
+        focal_length_xy     = np.array([fl_x, fl_y], np.float32),
+        cam_ext             = cam_ext_np.astype(np.float32) if cam_ext_np is not None
+                              else np.zeros((4, 4), np.float32),
+        translation         = translation_np.astype(np.float32) if translation_np is not None
+                              else np.zeros(3, np.float32),
+        # Bbox
+        bbox_params         = np.array([bbox_center[0], bbox_center[1],
+                                        bbox_scale, bbox_height], np.float32),
+        # tz candidates
+        tz_candidates       = np.array([
+            tz_bbox,
+            tz_pelvis_z,
+            tz_from_translation if tz_from_translation else float('nan'),
+            tz_solved_median    if tz_solved_median    else float('nan'),
+        ], np.float32),
+    )
+
+    # ── Text report ───────────────────────────────────────────────────────────
+    lines = [
+        '=' * 80,
+        f'DIAGNOSTIC REPORT  sample_{sample_idx:03d}_ds{ds_idx}',
+        f'  imgname:   {item.get("imgname", "?")}',
+        f'  dataset:   {item.get("dataset_name", "?")}',
+        f'  image:     {int(img_w_full)} × {int(img_h_full)} px',
+        '─' * 80,
+        'CAMERA INTRINSICS',
+        f'  fl_x={fl_x:.2f}  fl_y={fl_y:.2f}  (from item[focal_length])',
+        f'  cx={cx_assumed:.1f}  cy={cy_assumed:.1f}  (ASSUMED = image centre)',
+        f'  NOTE: cam_int cx/cy not stored in item; if camera has off-centre',
+        f'        principal point this assumption introduces a positional error.',
+        '─' * 80,
+        'BOUNDING BOX',
+        f'  bbox_scale (augmented) = {bbox_scale:.4f}',
+        f'  bbox_height            = {bbox_height:.1f} px   (= scale * 200)',
+        f'  bbox_center            = ({bbox_center[0]:.1f}, {bbox_center[1]:.1f}) px',
+        '─' * 80,
+        'VERTEX STATISTICS (before pelvis subtraction)',
+        f'  MHR  vertex count = {gt_verts_orig.shape[0]}',
+        f'  SMPL vertex count = {smpl_verts.shape[0]}',
+        f'  MHR  Y-range (body height est.) = {body_height_m:.4f} m',
+        f'  SMPL Y-range (body height est.) = {smpl_body_height_m:.4f} m',
+        f'  pelvis_3d (before subtraction) = [{pelvis_3d[0]:.4f}, {pelvis_3d[1]:.4f}, {pelvis_3d[2]:.4f}]',
+        f'  ├─ If pelvis_3d[2] ≈ 0–1.5 m → vertices are body-local (no abs. translation)',
+        f'  └─ If pelvis_3d[2] > 1.5 m   → vertices carry absolute camera-space position',
+        '─' * 80,
+        'tz CANDIDATES',
+        f'  tz_bbox        = {tz_bbox:.4f} m   formula: 2 * fl / bbox_height',
+        f'  tz_pelvis_z    = {tz_pelvis_z:.4f} m   pelvis_3d[2]',
+        f'  tz_translation = {tz_from_translation:.4f} m   item[translation][2]' if tz_from_translation else '  tz_translation = N/A',
+        f'  tz_solved_med  = {tz_solved_median:.4f} m   median reprojection ({len(all_tz_solved)} joint estimates)' if tz_solved_median else '  tz_solved_med  = N/A',
+        f'  tz_solved_σ    = {tz_solved_std:.4f}' if tz_solved_std else '',
+        f'',
+        f'  VERDICT: ratio tz_solved/tz_bbox = {tz_solved_median/tz_bbox:.3f}' if tz_solved_median else '  VERDICT: cannot compute ratio (no tz_solved)',
+        '─' * 80,
+        'REPROJECTION ERRORS (mean over confident joints)',
+        f'  tz_bbox        → {np.mean(reproj_errors_bbox):.1f} px' if reproj_errors_bbox else '  tz_bbox        → N/A',
+        f'  tz_translation → {np.mean(reproj_errors_transl):.1f} px' if reproj_errors_transl else '  tz_translation → N/A',
+        f'  tz_solved      → {np.mean(reproj_errors_solved):.1f} px' if reproj_errors_solved else '  tz_solved      → N/A',
+        '─' * 80,
+        'PER-JOINT TABLE  (all coordinates in pixels for 2D, metres for 3D)',
+        f'  {"ji":>2}  {"name":<14}  {"Z_orig":>7}  {"u_ann":>7}  {"v_ann":>7}  '
+        f'{"u_bbox":>7}  {"v_bbox":>7}  {"err_b":>6}  '
+        f'{"u_transl":>8}  {"err_t":>6}  {"tz_sx":>7}  {"tz_sy":>7}',
+    ]
+    for row in joint_report_rows:
+        lines.append(
+            f'  {row["ji"]:>2}  {row["name"]:<14}  '
+            f'{row["j3d_orig"][2]:>7.3f}  '
+            f'{str(row["u_ann"] or ""):>7}  {str(row["v_ann"] or ""):>7}  '
+            f'{str(row["u_bbox"] or ""):>7}  {str(row["v_bbox"] or ""):>7}  '
+            f'{str(row["err_bbox_px"] or ""):>6}  '
+            f'{str(row["u_transl"] or ""):>8}  {str(row["err_transl_px"] or ""):>6}  '
+            f'{str(row["tz_solved_x"] or ""):>7}  {str(row["tz_solved_y"] or ""):>7}'
+        )
+    lines += [
+        '─' * 80,
+        f'Files: {prefix}_diag.json / .npz / _reproj.png',
+        '=' * 80,
+    ]
+
+    report_text = '\n'.join(lines)
+    with open(f'{prefix}_diag.txt', 'w') as ft:
+        ft.write(report_text)
+    print(report_text)
+
+
+# ---------------------------------------------------------------------------
 # Main ????
 # ---------------------------------------------------------------------------
 
@@ -1078,6 +1641,35 @@ def main():
             _disp_w = max(1, int(fw * _disp_h / fh))
             gt_render = _cv2.resize(gt_render_full, (_disp_w, _disp_h),
                                     interpolation=_cv2.INTER_LINEAR)
+
+        # ---- diagnostic dump ---------------------------------------------------
+        # Runs for every sample; produces diag/*.json, .npz, _reproj.png, .txt.
+        # All quantities needed to diagnose tz and intrinsics errors are included.
+        if gt_verts is not None:
+            _smpl_j_orig    = compute_smpl_joints(to_numpy(item['vertices']))  # BEFORE pelvis sub
+            _smpl_j_centred = compute_smpl_joints(gt_verts_np)                 # AFTER  pelvis sub
+            _smpl_v_orig    = compute_smpl_verts(to_numpy(item['vertices']))
+            _pelvis_orig    = compute_smpl_pelvis(to_numpy(item['vertices']))  # [3] pre-sub
+            dump_sample_diagnostics(
+                out_dir       = args.out_dir,
+                sample_idx    = sample_idx,
+                ds_idx        = ds_idx,
+                item          = item,
+                gt_verts_orig     = to_numpy(item['vertices']),  # [V,3] BEFORE pelvis sub
+                gt_verts_centred  = gt_verts_np,                 # [V,3] AFTER  pelvis sub
+                pelvis_3d         = _pelvis_orig,
+                smpl_joints_orig  = _smpl_j_orig,
+                smpl_joints_centred = _smpl_j_centred,
+                smpl_verts        = _smpl_v_orig,
+                fl_val            = fl_val,
+                img_w_full        = img_w_full,
+                img_h_full        = img_h_full,
+                bbox_scale        = bbox_scale,
+                bbox_center       = bbox_center,
+                cam_t_full        = cam_t_full,
+                faces             = faces,
+                smpl_faces        = smpl_faces,
+            )
 
         # ---- prediction -----------------------------------------------------
         pred_render = None
