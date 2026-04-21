@@ -1,12 +1,32 @@
 """
 MHR-based HMR Model for D-Pose MHR port.
 
+MAPPED FROM: train/models/hmr.py (HMR — SMPL/SMPLX version)
+
 This module replaces the SMPL-based HMR model and predicts MHR parameters
 directly from images. The architecture follows the same pattern as the
 original HMR but outputs MHR-compatible parameters.
 
 Architecture:
     Image → HRNet Backbone → MHR Regressor → MHR Parameters → MHR Head → Vertices/Joints
+
+File correspondence:
+  mhr_hmr.py:MHRHMR  ←  train/models/hmr.py:HMR
+
+Key differences from original HMR:
+  - Head: SMPLXCamHead (original) → MHRRegressor + MHRHead (new)
+    - Original Regressor() returns pred_pose (rotmat), pred_shape (betas), pred_cam
+    - New MHRRegressor() returns pred_pose (lbs_model_params), pred_identity, pred_expr, pred_cam
+  - SMPLXCamHead (original, train/models/head/smplx_cam_head.py) → MHRHead (new)
+    - Original: rotmat + shape + cam → SMPLX forward → vertices/joints
+    - New: identity + lbs + expr + cam → MHR forward → vertices/joints
+  - OneEuroFilter: original filters pred_pose, pred_shape, pred_cam
+    - New filters pred_pose, pred_identity, pred_expr, pred_cam (no pred_shape)
+  - Original __getitem__ returns smpl_output which is smpl_output.update(hmr_output)
+    - New returns mhr_forward_output which is mhr_forward_output.update(mhr_output)
+  - Original no-segmentation path: self.head(features, bbox_info=bbox_info, depth_feats=None)
+    - New no-segmentation path: adaptive_avg_pool2d → self.head(pose_feat, pose_feat, pose_feat, bbox_info, None)
+  - mhr_model is passed in as constructor arg (pre-loaded from checkpoint)
 """
 
 import torch
@@ -30,6 +50,7 @@ from train.utils.one_euro_filter import OneEuroFilter
 
 
 class MHRHMR(nn.Module):
+    # MAPPED FROM: train/models/hmr.py:HMR (L12)
     """HMR model that predicts MHR parameters directly.
 
     Unlike the original HMR which predicts SMPL betas/pose and then
@@ -55,12 +76,13 @@ class MHRHMR(nn.Module):
                  pretrained_ckpt=None,
                  hparams=None,
                  mhr_model=None):
+        # MAPPED FROM: HMR.__init__ (train/models/hmr.py:L13)
         super(MHRHMR, self).__init__()
         self.hparams = hparams
         self.img_res = img_res
         self.focal_length = focal_length
 
-        # Initialize backbone
+        # Initialize backbone — identical to original (hmr.py:L24-33)
         if backbone.startswith('hrnet'):
             backbone_name, use_conv = backbone.split('-')
             pretrained_ckpt = backbone_name + '-' + pretrained_ckpt
@@ -72,6 +94,9 @@ class MHRHMR(nn.Module):
             )
 
         # MHR-specific head components
+        # ← original: self.head = Regressor()  [hmr.py:L37]
+        #   Regressor() returns {pred_pose (rotmat), pred_shape (betas), pred_cam}
+        # ← new: MHRRegressor() returns {pred_pose (lbs_params), pred_identity, pred_expr, pred_cam}
         if hparams and hparams.TRIAL.bedlam_bbox:
             # Channel count of the upsampled HRNet feature map (all branches concatenated)
             _backbone_channels = {'hrnet_w32': 480, 'hrnet_w48': 720}
@@ -82,22 +107,28 @@ class MHRHMR(nn.Module):
                                      use_depth=_use_depth)
 
             if mhr_model is not None:
+                # ← original: self.smpl = SMPLXCamHead(img_res=img_res)  [hmr.py:L38]
+                #   SMPLXCamHead takes (rotmat, shape, cam) → SMPLX forward → vertices/joints
+                #   MHRHead takes (identity, lbs_model_params, expr, cam) → MHR forward → vertices/joints
                 self.mhr_head = MHRHead(mhr_model, img_res=img_res)
             else:
                 # Will be initialized later
                 self.mhr_head = None
 
-        # Optional depth decoder
+        # Optional depth decoder — identical to original (hmr.py:L39-40)
         if hparams and hparams.DATASET.USE_DEPTH:
             self.depth_decoder = UNET(depth=True)
 
-        # Optional segmentation decoder
+        # Optional segmentation decoder — identical to original (hmr.py:L42-45)
         if hparams and hparams.DATASET.USE_SEGM:
             self.segmentation_decoder = UNET(depth=False)
             self.attention = KeypointAttention()
             self.avg_pool_cam_shape = nn.AdaptiveAvgPool2d((768, 1))
 
         # OneEuroFilter for temporal smoothing
+        # ← original (hmr.py:L46-52): filters pred_pose, pred_shape, pred_cam
+        # ← new: filters pred_pose, pred_identity, pred_expr, pred_cam
+        #   pred_shape (betas) replaced by pred_identity + pred_expr (two separate filters)
         self.min_cutoff = 0.004
         self.beta = 0.7
         self.t = 0
@@ -114,6 +145,21 @@ class MHRHMR(nn.Module):
                 img_w=None,
                 img_h=None,
                 fl=None):
+        # MAPPED FROM: HMR.forward (train/models/hmr.py:L54)
+        #
+        # Flow comparison:
+        #   ORIGINAL: backbone → head → {pred_pose, pred_shape, pred_cam} →
+        #             SMPLXCamHead(rotmat=pred_pose, shape=pred_shape, cam=pred_cam) → smpl_output
+        #             smpl_output.update(hmr_output) → return smpl_output
+        #
+        #   NEW:      backbone → head → {pred_pose, pred_identity, pred_expr, pred_cam} →
+        #             MHRHead(identity=pred_identity, lbs=pred_pose, expr=pred_expr, cam=pred_cam) → mhr_forward_output
+        #             mhr_forward_output.update(mhr_output) → return mhr_forward_output
+        #
+        # No-segmentation path difference:
+        #   ORIGINAL (hmr.py:L114): self.head(features, bbox_info=bbox_info, depth_feats=None)
+        #   NEW (below): adaptive_avg_pool2d → self.head(pose_feat, pose_feat, pose_feat, bbox_info, None)
+        #     The MHRRegressor expects [B, C, J] spatially-pooled features as first arg.
         """
         Forward pass predicting MHR parameters and computing vertices.
 
@@ -233,6 +279,10 @@ class MHRHMR(nn.Module):
                                        depth_feats=None)
 
             # Apply OneEuroFilter for temporal smoothing
+            # ← original (hmr.py:L120-133): initializes/filters pred_cam, pred_pose, pred_shape
+            #   self.one_euro_shape = OneEuroFilter(...) for pred_shape (betas)
+            # ← new: pred_shape replaced by pred_identity + pred_expr (two separate filters)
+            #   self.one_euro_identity, self.one_euro_expr, NO self.one_euro_shape
             if self.one_euro_cam is None and self.use_one_euro:
                 self.one_euro_cam = OneEuroFilter(
                     np.zeros_like(mhr_output['pred_cam'][0].detach().cpu()),
@@ -273,8 +323,13 @@ class MHRHMR(nn.Module):
                     self.one_euro_identity(
                         t_identity, mhr_output['pred_identity'].detach().cpu().
                         numpy())).cuda()
+                # ← original also filtered: hmr_output['pred_shape']
+                #   New: no pred_shape; pred_identity and pred_expr are filtered above
 
             # Forward through MHR head to get vertices and joints
+            # ← original (hmr.py:L134-144): self.smpl(rotmat=hmr_output['pred_pose'], shape=hmr_output['pred_shape'], cam=hmr_output['pred_cam'], ...)
+            #   SMPLXCamHead expects (rotmat, shape, cam)
+            #   MHRHead expects (identity_coeffs, lbs_model_params, face_expr_coeffs, cam)
             mhr_forward_output = self.mhr_head(
                 identity_coeffs=mhr_output['pred_identity'],
                 lbs_model_params=mhr_output['pred_pose'],

@@ -1,11 +1,29 @@
 """
 Dataset Wrapper for SMPL to MHR Conversion.
 
+MAPPED FROM: train/dataset/dataset.py (original SMPL/SMPLX DatasetHMR)
+
 This module wraps the existing DatasetHMR and converts SMPL ground truth
 to MHR parameters using the Conversion class from MHR tools.
 
 The wrapper performs one-time conversion of SMPL vertices to MHR parameters,
 then caches the results for efficient training.
+
+File correspondence:
+  dataset_wrapper.py:DatasetHMR       ←  train/dataset/dataset.py:DatasetHMR  (extends it)
+  dataset_wrapper.py:_extract_joints_from_skel_state  — new utility (no original)
+  dataset_wrapper.py:preconvert_dataset  — new standalone (no original)
+
+Key differences from original DatasetHMR:
+  - __init__ calls super().__init__() then adds MHR cache/conversion machinery
+  - __getitem__ calls super().__getitem__() to get original SMPL data, then adds MHR fields
+  - New methods: _try_load_cache, _init_converter, _convert_smpl_to_mhr, _convert_single_sample
+  - Original DatasetHMR.__init__ (L56-191) handles pose_cam, betas, gtkps, SMPL/SMPLX model loading
+    — most of that is untouched but NOT re-implemented here (inherited from super)
+  - Original __getitem__ (L406-584) returns SMPL fields (pose, betas, vertices, joints)
+    — wrapper adds identity_coeffs, face_expr_coeffs, lbs_model_params, overwrites vertices/joints3d
+  - Original get_vertices (L287-392) runs SMPL/SMPLX forward for GT mesh generation
+    — replaced by _convert_smpl_to_mhr which runs SMPLX → Conversion → MHR pipeline
 """
 
 import os
@@ -21,6 +39,10 @@ _SKEL_STATE_FORMAT_LOGGED = False
 
 
 def _extract_joints_from_skel_state(skel_state: torch.Tensor) -> torch.Tensor:
+    # NEW FUNCTION — no original in train/dataset/dataset.py
+    # This is a MHR-specific utility that didn't exist in the original codebase.
+    # The original dataset used SMPL joint regressor (J_regressor @ vertices) to
+    # extract joints. Here we extract them from MHR's skel_state tensor instead.
     """Extract joint world-space translations from MHR skeleton state.
 
     MHR.from_files() may return skel_state in one of several formats:
@@ -69,6 +91,7 @@ def _extract_joints_from_skel_state(skel_state: torch.Tensor) -> torch.Tensor:
 
 
 class DatasetHMR(OriginalDatasetHMR):
+    # MAPPED FROM: train/dataset/dataset.py:DatasetHMR (L56)
     """Dataset wrapper that converts SMPL ground truth to MHR parameters.
 
     This class extends the original DatasetHMR and adds SMPL→MHR conversion:
@@ -85,13 +108,34 @@ class DatasetHMR(OriginalDatasetHMR):
     - vertices: [B, V, 3] MHR mesh vertices (in meters)
     - joints3d: [B, J, 3] MHR skeleton joints (in meters)
 
-    Args:
-        options: Dataset options
-        dataset: Dataset name
-        is_train: Whether this is training dataset
+    Inherited from Original DatasetHMR (train/dataset/dataset.py:56-191):
+    - pose_cam, betas, scale, center, imgname, gender, keypoints
+    - SMPL/SMPLX model instances (smpl_male, smpl_female, smplx_male, smplx_female, etc.)
+    - J_regressor, smplx2smpl, smplx_part_segm
+    - get_vertices() method (L287-392 in original) — used for GT mesh generation
+    - rgb_processing() method (L202-236) — image crop + normalization
+    - j2d_processing() method (L396-404) — 2D keypoint transform
+    - __len__() method (L586-591) — dataset length
+
+    New/overridden methods:
+    - __init__: calls super().__init__() then adds MHR cache/conversion
+    - __getitem__: calls super().__getitem__() then adds MHR fields
+    - _try_load_cache: new — loads .npz cache file
+    - _init_converter: new — initializes SMPLX + MHR + Conversion objects
+    - _convert_smpl_to_mhr: new — core SMPLX→MHR conversion pipeline
+    - _convert_single_sample: new — per-sample conversion wrapper
     """
 
     def __init__(self, options, dataset, is_train=True):
+        # MAPPED FROM: Original DatasetHMR.__init__ (train/dataset/dataset.py:58)
+        # super().__init__() runs the original __init__ which:
+        #   - loads self.data from .npz file (DATASET_FILES[is_train][dataset])
+        #   - extracts pose_cam, betas, scale, center, imgname
+        #   - loads SMPL/SMPLX model instances (smpl_male, smplx_female, etc.)
+        #   - sets up gender, keypoints, J_regressor, smplx2smpl
+        #   - sets up depth/mask dirs if USE_DEPTH
+        #   - sets up augmentation (albumentations)
+        # All of that is inherited and untouched — we just add MHR on top.
         super().__init__(options, dataset, is_train=is_train)
 
         self.dataset_name = dataset
@@ -118,6 +162,11 @@ class DatasetHMR(OriginalDatasetHMR):
             logger.info(f"Loaded cached MHR parameters for {dataset}")
 
     def _try_load_cache(self):
+        # NEW METHOD — no original in train/dataset/dataset.py
+        # The original dataset had no caching — every __getitem__ ran SMPLX forward
+        # via get_vertices() (original L287-392) to generate GT vertices on-the-fly.
+        # This method loads pre-converted MHR parameters from a .npz cache file,
+        # avoiding repeated SMPLX→MHR conversion at runtime.
         """Try to load cached MHR parameters."""
         if self.cache_file.exists():
             try:
@@ -133,6 +182,11 @@ class DatasetHMR(OriginalDatasetHMR):
         return None
 
     def _init_converter(self):
+        # NEW METHOD — no original in train/dataset/dataset.py
+        # The original dataset loaded SMPL/SMPLX models in __init__ (L170-183)
+        # and used them directly in get_vertices() for GT mesh generation.
+        # Here we load SMPLX + MHR + Conversion objects specifically for
+        # the SMPL→MHR conversion pipeline.
         """Initialize SMPL→MHR converter.
 
         This sets up the Conversion class for on-the-fly conversion.
@@ -204,6 +258,17 @@ class DatasetHMR(OriginalDatasetHMR):
             raise
 
     def _convert_smpl_to_mhr(self, smpl_data):
+        # NEW METHOD — replaces original DatasetHMR.get_vertices() (train/dataset/dataset.py:L287-392)
+        #
+        # Original get_vertices() ran SMPL/SMPLX forward and returned (vertices, joints)
+        # with dataset-specific branches (3dpw/emdb → SMPL, rich → SMPLX→SMPL, h36m → zeros,
+        # agora → SMPLX, etc.). All used gender-specific model instances loaded in __init__.
+        #
+        # This method replaces that pipeline:
+        #   1. Runs SMPLX forward (similar to original's SMPLX path) to get SMPLX vertices
+        #   2. Runs Conversion.convert_smpl2mhr() to convert SMPLX→MHR (new — no original)
+        #   3. Runs MHR forward to extract skel_state → joints (new — no original)
+        #   4. Returns MHR params: identity_coeffs, face_expr_coeffs, lbs_model_params, vertices, joints3d
         """Convert SMPL data to MHR parameters.
 
         Args:
@@ -319,6 +384,19 @@ class DatasetHMR(OriginalDatasetHMR):
         }
 
     def __getitem__(self, index):
+        # MAPPED FROM: Original DatasetHMR.__getitem__ (train/dataset/dataset.py:L406-584)
+        #
+        # Original __getitem__ returned: img, pose, betas, vertices, joints, keypoints,
+        #   scale, center, imgname, gender, depth, faces, etc.
+        #   GT vertices/joints were generated via get_vertices() (L287-392) which ran
+        #   SMPL/SMPLX forward with gender-specific models.
+        #
+        # This version:
+        #   1. Calls super().__getitem__(index) to get all original SMPL fields
+        #   2. Loads or converts MHR parameters (cache or on-the-fly)
+        #   3. Adds MHR fields: identity_coeffs, face_expr_coeffs, lbs_model_params
+        #   4. Overwrites 'vertices' (MHR verts vs SMPL verts — different vertex counts)
+        #   5. Adds 'joints3d_mhr' (separate key from inherited 'joints' which is SMPL)
         """Get item with MHR parameters.
 
         Args:
@@ -387,6 +465,11 @@ class DatasetHMR(OriginalDatasetHMR):
         return item
 
     def _convert_single_sample(self, pose, betas, transl):
+        # NEW METHOD — no original in train/dataset/dataset.py
+        # Convenience wrapper that unsqueezes a single sample into batch format
+        # and calls _convert_smpl_to_mhr. The original dataset had no equivalent
+        # — all GT generation happened inside get_vertices() which operated on
+        # a single sample directly via SMPL/SMPLX forward pass.
         """Convert single SMPL sample to MHR."""
         # Lazy-initialize the converter in whichever process first needs it.
         # This keeps the dataset pickle-clean for spawn-based DataLoader workers.
@@ -413,6 +496,12 @@ class DatasetHMR(OriginalDatasetHMR):
 
 
 def preconvert_dataset(options, dataset_name, output_path):
+    # NEW FUNCTION — no original in train/dataset/dataset.py
+    # Convenience function for one-time full-dataset SMPL→MHR conversion.
+    # The original dataset generated GT vertices on-the-fly in every __getitem__
+    # via get_vertices() (original L287-392). This function pre-computes all
+    # MHR parameters and saves them as .npz cache, so runtime __getitem__
+    # can load from cache instead of running SMPLX + Conversion every time.
     """Pre-convert entire dataset to MHR parameters.
 
     This function converts all samples in a dataset to MHR parameters

@@ -1,10 +1,31 @@
 """
 MHR Head Module for D-Pose MHR port.
 
+MAPPED FROM: train/models/head/smplx_cam_head.py:SMPLXCamHead
+
 This module replaces SMPLXCamHead and provides:
 1. MHR forward pass to compute vertices from MHR parameters
 2. Camera projection for 3D to 2D joint projection
 3. Skeleton state extraction for joint positions
+
+File correspondence:
+  mhr_head.py:MHRHead          ←  train/models/head/smplx_cam_head.py:SMPLXCamHead
+  mhr_head.py:perspective_projection  ←  train/models/head/smplx_cam_head.py:perspective_projection  (identical)
+  mhr_head.py:convert_pare_to_full_img_cam  ←  train/models/head/smplx_cam_head.py:convert_pare_to_full_img_cam  (identical)
+
+Key differences from original SMPLXCamHead:
+  - Input params: original takes (rotmat, shape, cam) → SMPLX forward
+    MHR takes (identity_coeffs, lbs_model_params, face_expr_coeffs, cam) → MHR forward
+  - Original: SMPLX model instance with num_betas=11, runs SMPLX forward with pose2rot=False
+    MHR: mhr_model instance (pre-loaded TorchScript), runs MHR forward with identity/lbs/expr
+  - Original output: {vertices, joints3d, joints2d, pred_cam_t, left_hand_3d, right_hand_3d, head_3d, ...}
+    MHR output: {vertices, joints3d (127 MHR skel joints), joints3d_smpl (24), joints2d (127), joints2d_smpl (24), pred_cam_t, skel_state}
+  - Original: joints3d = smpl_output.joints[:22] (body joints from SMPLX)
+    MHR: joints3d = skel_state[:, :, :3] (first 3 values of MHR skeleton transforms)
+  - New: MHR head computes SMPL joints via barycentric interpolation (mhr2smpl_mapping.npz + SMPL J_regressor)
+    This provides differentiable SMPL-ordered joints for loss computation
+  - New: Two 2D projection outputs — joints2d (MHR 127-joint ordering, viz only) and joints2d_smpl (SMPL 24-joint ordering, used in loss)
+  - Original SMPLXCamHeadBodyOnly (L8-60): simplified version without hands/head split — MHRHead is closer to this
 """
 
 import os
@@ -33,11 +54,12 @@ def _stub_chumpy():
 
 
 class MHRHead(nn.Module):
+    # MAPPED FROM: train/models/head/smplx_cam_head.py:SMPLXCamHead (L66)
     """Head that applies MHR model and projects joints to 2D.
 
     This replaces SMPLXCamHead and works directly with MHR parameters:
     - identity_coeffs: [B, 45] body shape blendshapes
-    - lbs_model_params: [B, ~144] LBS model parameters
+    - lbs_model_params: [B, ~204] LBS model parameters
     - face_expr_coeffs: [B, 72] facial expressions
 
     Args:
@@ -46,6 +68,21 @@ class MHRHead(nn.Module):
     """
 
     def __init__(self, mhr_model, img_res=224):
+        # MAPPED FROM: SMPLXCamHead.__init__ (smplx_cam_head.py:L67)
+        #
+        # Original:
+        #   self.smplx = SMPLX(config.SMPLX_MODEL_DIR, num_betas=11)
+        #   self.add_module('smplx', self.smplx)
+        #   self.img_res = img_res
+        #
+        # New:
+        #   self.mhr_model = mhr_model (pre-loaded from checkpoint, not loaded from disk)
+        #   self.img_res = img_res
+        #
+        # New in MHRHead:
+        #   - Barycentric mapping (mhr2smpl_mapping.npz) for SMPL joint extraction
+        #   - SMPL J_regressor from SMPL_NEUTRAL.pkl for differentiable joint computation
+        #   - These enable computing SMPL-ordered 24-joint predictions from MHR vertices
         super(MHRHead, self).__init__()
         self.mhr_model = mhr_model
         self.img_res = img_res
@@ -55,6 +92,8 @@ class MHRHead(nn.Module):
 
         # Register MHR faces for rendering
         # These come from the MHR character mesh
+        # ← original: self.smplx.faces (SMPLX faces from model instance)
+        # ← new: mhr_model.character.mesh.faces (MHR faces from loaded model)
         if hasattr(mhr_model, 'character') and hasattr(mhr_model.character,
                                                        'mesh'):
             faces = mhr_model.character.mesh.faces
@@ -68,6 +107,9 @@ class MHRHead(nn.Module):
             self.faces = None
 
         # Load mhr2smpl mapping + SMPL J_regressor for differentiable joint computation
+        # ← original: no such mapping — SMPLX model directly outputs SMPL-ordered joints
+        # ← new: MHR vertices are in a different mesh space, need barycentric interpolation
+        #   to project onto SMPL vertex topology, then J_regressor for joint extraction
         _proj_root = os.path.dirname(os.path.dirname(
             os.path.abspath(__file__)))
         if _proj_root not in sys.path:

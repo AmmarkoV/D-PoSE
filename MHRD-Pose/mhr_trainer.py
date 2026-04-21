@@ -1,8 +1,24 @@
 """
 MHR Trainer Module for D-Pose MHR port.
 
+MAPPED FROM: train/core/hmr_trainer.py (HMRTrainer — SMPL/SMPLX version)
+
 This module provides a PyTorch Lightning module for training the MHR-based HMR model.
 It replaces HMRTrainer and is completely independent of SMPL dependencies.
+
+File correspondence:
+  mhr_trainer.py:MHRTrainer  ←  train/core/hmr_trainer.py:HMRTrainer
+
+Key differences from original HMRTrainer:
+  - No smplx.SMPLX / smplx.SMPL module instances (replaced by mhr_model loaded from checkpoint)
+  - No smplx2smpl face/vertex mapping tensor (MHR vertices are used directly)
+  - No J_regressor buffer (SMPL joints derived from MHR vertices via barycentric interpolation)
+  - Training GT: smplx(gt_betas, gt_pose) → barycentric interp of gt vertices → SMPL joints
+  - Validation GT: unified MHR→SMPL mapping instead of dataset-specific branches (bedlam/rich/h36m/3dpw)
+  - Validation_epoch_end → on_validation_epoch_end (PL v2.0 API: outputs arg removed, accumulate manually)
+  - test_epoch_end → on_test_epoch_end (same PL v2.0 reason)
+  - Renderer faces loaded from mhr_portable_dump instead of smplx.faces
+  - DataLoader multiprocessing_context='spawn' added for CUDA safety in workers
 """
 
 import os
@@ -33,31 +49,36 @@ class MHRTrainer(pl.LightningModule):
     """
 
     def __init__(self, hparams):
+        # MAPPED FROM: HMRTrainer.__init__ (train/core/hmr_trainer.py:20)
         super(MHRTrainer, self).__init__()
 
         self.hparams.update(hparams)
 
         # Import here to avoid circular imports
-        from mhr_hmr import MHRHMR
-        from mhr_losses import MHRLoss
+        from mhr_hmr import MHRHMR        # ← original: from ..models.hmr import HMR
+        from mhr_losses import MHRLoss    # ← original: from ..losses.losses import HMRLoss
         from config import MHR_MODEL_PT
 
         # Load MHR model
+        # ← original: self.smplx = smplx.SMPLX(...) and self.smpl = smplx.SMPL(...)
+        #   SMPLX/SMPL model instances replaced by loading MHR model from checkpoint
         self.mhr_model = torch.load(MHR_MODEL_PT,
                                     map_location='cpu',
                                     weights_only=False)
         self.add_module('mhr_model', self.mhr_model)
 
         # Initialize MHR-based HMR model
+        # ← original: self.model = HMR(...)  [line 24 of hmr_trainer.py]
         self.model = MHRHMR(
             backbone=self.hparams.MODEL.BACKBONE,
             img_res=self.hparams.DATASET.IMG_RES,
             pretrained_ckpt=self.hparams.TRAINING.PRETRAINED_CKPT,
             hparams=self.hparams,
-            mhr_model=self.mhr_model,
+            mhr_model=self.mhr_model,  # ← new param: passes MHR model to HMR wrapper
         )
 
         # MHR loss function
+        # ← original: self.loss_fn = HMRLoss(hparams=self.hparams)
         self.loss_fn = MHRLoss(hparams=self.hparams)
 
         # Dataset
@@ -68,10 +89,19 @@ class MHRTrainer(pl.LightningModule):
         self.save_itr = 0
         self._val_step_outputs = [
         ]  # accumulated by validation_step; read by on_validation_epoch_end
+        # ← original had no _val_step_outputs — PL v1.x passed `outputs` to validation_epoch_end
+        #   PL v2.0 removed that arg, so we accumulate manually (like PL docs recommend)
+
+        # ← original: self.smplx2smpl = pickle.load(...); self.smplx2smpl = torch.tensor(...).cuda()
+        #   No longer needed — MHR vertices are already in the right space, no SMPLX→SMPL conversion
+
+        # ← original: self.register_buffer('J_regressor', torch.from_numpy(...))
+        #   No longer needed — SMPL joints derived from MHR vertices via barycentric interp in training/validation
 
         # Renderer for visualization
-        # mhr_model is a TorchScript RecursiveScriptModule; .character is not
-        # accessible via __getattr__. Load faces from the portable dump instead.
+        # ← original: faces=self.smplx.faces  [line 53 of hmr_trainer.py]
+        #   mhr_model is a TorchScript RecursiveScriptModule; .character is not
+        #   accessible via __getattr__. Load faces from the portable dump instead.
         import sys as _sys
         _proj_root = os.path.dirname(os.path.dirname(
             os.path.abspath(__file__)))
@@ -89,11 +119,12 @@ class MHRTrainer(pl.LightningModule):
         self.renderer = Renderer(
             focal_length=self.hparams.DATASET.FOCAL_LENGTH,
             img_res=self.hparams.DATASET.IMG_RES,
-            faces=self.faces,
+            faces=self.faces,  # ← original: faces=self.smplx.faces
             mesh_color=self.hparams.DATASET.MESH_COLOR,
         )
 
     def forward(self, x, bbox_center, bbox_scale, img_w, img_h, fl=None):
+        # MAPPED FROM: HMRTrainer.forward (hmr_trainer.py:57)
         """Forward pass through MHR-based HMR model."""
         return self.model(x,
                           bbox_center=bbox_center,
@@ -103,6 +134,18 @@ class MHRTrainer(pl.LightningModule):
                           fl=fl)
 
     def training_step(self, batch, batch_nb, dataloader_nb=0):
+        # MAPPED FROM: HMRTrainer.training_step (hmr_trainer.py:60)
+        #
+        # Key difference in GT computation:
+        #   ORIGINAL (hmr_trainer.py:76-82): self.smplx(betas=gt_betas, body_pose=..., global_orient=...)
+        #     → runs SMPLX model forward to get gt vertices and joints
+        #   MHR (below): uses barycentric interpolation of GT MHR vertices
+        #     → _smpl_tri_vids + _smpl_baryc map MHR→SMPL vertices
+        #     → _smpl_J_reg projects SMPL vertices→joints (same J_regressor as original)
+        #     → No need for smplx module at all
+        #
+        # Original also extracted gt_betas, gt_pose from batch — not used here
+        # (MHR has no pose/betas params; skeleton state is the output)
         """Training step with MHR loss computation.
 
         Args:
@@ -184,6 +227,21 @@ class MHRTrainer(pl.LightningModule):
                         vis=False,
                         save=True,
                         mesh_save_dir=None):
+        # MAPPED FROM: HMRTrainer.validation_step (hmr_trainer.py:93)
+        #
+        # Key difference — original had dataset-specific branches (hmr_trainer.py:116-173):
+        #   'bedlam':    smplx(gt) → gt vertices/joints, pred[:24]
+        #   'rich':      batch['vertices'], smplx2smpl matrix convert pred vertices, J_regressor
+        #   'h36m':      batch['vertices'], J_regressor, joint_mapper_h36m, smplx2smpl
+        #   else (3dpw): batch['vertices'], J_regressor, joint_mapper_h36m, smplx2smpl
+        #   All used self.smplx2smpl (SMPLX→SMPL vertex mapping matrix) and self.J_regressor
+        #
+        # MHR version: unified approach using barycentric MHR→SMPL vertex mapping
+        #   (_smpl_tri_vids, _smpl_baryc, _smpl_J_reg) — no dataset branches needed
+        #   because MHR vertices are already in a common coordinate space.
+        #
+        # Also: PL v2.0 — this returns a dict that gets accumulated in _val_step_outputs
+        #   (original had no return accumulation; validation_epoch_end received `outputs`)
         """Validation step computing MPJPE/PA-MPJPE metrics.
 
         Args:
@@ -304,6 +362,10 @@ class MHRTrainer(pl.LightningModule):
         return loss_dict
 
     def on_validation_epoch_end(self):
+        # MAPPED FROM: HMRTrainer.validation_epoch_end (hmr_trainer.py:201)
+        #
+        # PL v2.0 change: original received `outputs` as arg, now reads self._val_step_outputs
+        # (populated by validation_step's accumulation at line 303)
         """Log validation metrics at end of epoch (PL v2.0+: no outputs arg)."""
         outputs = self._val_step_outputs
         self._val_step_outputs = []  # clear for next epoch
@@ -366,18 +428,23 @@ class MHRTrainer(pl.LightningModule):
             self.log(k, v, logger=True, sync_dist=True)
 
     def test_step(self, batch, batch_nb, dataloader_nb=0):
+        # MAPPED FROM: HMRTrainer.test_step (hmr_trainer.py:241)
         return self.validation_step(batch, batch_nb, dataloader_nb)
 
     def on_test_epoch_end(self):
+        # MAPPED FROM: HMRTrainer.test_epoch_end (hmr_trainer.py:244)
+        # PL v2.0: test_epoch_end(outputs) → on_test_epoch_end (no outputs arg)
         return self.on_validation_epoch_end()
 
     def configure_optimizers(self):
+        # MAPPED FROM: HMRTrainer.configure_optimizers (hmr_trainer.py:247)
         """Configure optimizer for training."""
         return torch.optim.Adam(self.parameters(),
                                 lr=self.hparams.OPTIMIZER.LR,
                                 weight_decay=self.hparams.OPTIMIZER.WD)
 
     def train_dataset(self):
+        # MAPPED FROM: HMRTrainer.train_dataset (hmr_trainer.py:255)
         """Create training dataset."""
         options = self.hparams.DATASET
         dataset_names = options.DATASETS_AND_RATIOS.split('_')
@@ -386,6 +453,12 @@ class MHRTrainer(pl.LightningModule):
         return train_ds
 
     def train_dataloader(self):
+        # MAPPED FROM: HMRTrainer.train_dataloader (hmr_trainer.py:264)
+        #
+        # New: multiprocessing_context='spawn' added (original had none)
+        #   Original workers may have run SMPL→MHR conversion (see dataset_wrapper.py)
+        #   which uses SMPL model instances — CUDA can't be re-initialized in forked
+        #   processes, so 'spawn' is required.
         """Create training dataloader."""
         self.train_ds = self.train_dataset()
         img_dataloader = DataLoader(
@@ -403,6 +476,7 @@ class MHRTrainer(pl.LightningModule):
         return img_dataloader
 
     def val_dataset(self):
+        # MAPPED FROM: HMRTrainer.val_dataset (hmr_trainer.py:277)
         """Create validation dataset."""
         datasets = self.hparams.DATASET.VAL_DS.split('_')
         logger.info(f'Validation datasets are: {datasets}')
@@ -417,6 +491,8 @@ class MHRTrainer(pl.LightningModule):
         return val_datasets
 
     def val_dataloader(self):
+        # MAPPED FROM: HMRTrainer.val_dataloader (hmr_trainer.py:291)
+        # Same 'spawn' addition as train_dataloader.
         """Create validation dataloader."""
         dataloaders = []
         for val_ds in self.val_ds:
@@ -433,4 +509,5 @@ class MHRTrainer(pl.LightningModule):
         return dataloaders
 
     def test_dataloader(self):
+        # MAPPED FROM: HMRTrainer.test_dataloader (hmr_trainer.py:305)
         return self.val_dataloader()

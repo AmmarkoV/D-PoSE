@@ -1,8 +1,35 @@
 """
 MHR Loss Functions for D-Pose MHR port.
 
+MAPPED FROM: train/losses/losses.py (HMRLoss — SMPL/SMPLX version)
+
 This module provides loss functions for training the MHR-based HMR model.
 It replaces the SMPL-based losses and works directly with MHR parameters.
+
+File correspondence:
+  mhr_losses.py:mhr_losses              ←  train/losses/losses.py:smpl_losses
+  mhr_losses.py:projected_keypoint_loss  ←  train/losses/losses.py:projected_keypoint_loss  (identical)
+  mhr_losses.py:keypoint_3d_loss         ←  train/losses/losses.py:keypoint_3d_loss        (identical)
+  mhr_losses.py:shape_loss               ←  train/losses/losses.py:shape_loss              (identical)
+  mhr_losses.py:MHRLoss                  ←  train/losses/losses.py:HMRLoss
+
+Key differences from original HMRLoss:
+  - Original predicts: pred_pose (rotmat), pred_shape (betas), pred_cam
+    MHR predicts: pred_identity, pred_expr, pred_pose (lbs_params), pred_cam
+  - Original loss: smpl_losses(pred_rotmat, pred_betas, ...) → loss_regr_pose, loss_regr_betas
+    MHR loss: mhr_losses(pred_identity, pred_expr, pred_pose, ...) → loss_regr_identity, loss_regr_expr, loss_regr_pose
+  - Original weight: beta_loss_weight for betas
+    MHR weight: identity_loss_weight, expr_loss_weight (split from single beta weight)
+  - Original 3D keypoint loss: pred_joints[:, :self.num_joints] vs gt_joints[:, :self.num_joints]
+    MHR 3D keypoint loss: tries joints3d_smpl first, falls back to MHR-to-SMPL index mapping
+  - Original has many conditional loss branches (losses_abl variants, SUPERVISE_SEGM, SUPERVISE_DEPTH)
+    MHR: simplified — always returns the same loss_dict structure, no conditional branches
+  - Original: self.num_joints = 49 (SMPL) or 24 (SMPLX) based on TRIAL.version
+    MHR: self.num_joints = NUM_MHR_SKELETON_JOINTS (127)
+  - Original: uses batch_rodrigues to convert gt_pose rotvec → rotmat internally in smpl_losses
+    MHR: lbs_model_params are direct regression targets, no Rodrigues conversion
+  - Original: has depth_loss, ssim_loss, projected_verts_loss, reconstruction_error, generate_part_labels
+    MHR: no depth/segm/SSIM losses (those are handled separately if needed)
 """
 
 import torch
@@ -28,6 +55,17 @@ def mhr_losses(
     gt_pose,
     criterion,
 ):
+    # MAPPED FROM: train/losses/losses.py:smpl_losses (L577-596)
+    #
+    # Original smpl_losses:
+    #   - Converts pred_rotmat (rot6d or rotmat) and gt_pose (rotvec) to rotmat via batch_rodrigues
+    #   - Returns (loss_regr_pose, loss_regr_betas)
+    #   - Uses gt_pose.reshape(-1, 3) → batch_rodrigues for pose conversion
+    #
+    # MHR version:
+    #   - Direct L2 regression on lbs_model_params (no Rodrigues conversion needed)
+    #   - Returns (loss_regr_identity, loss_regr_expr, loss_regr_pose) — three-way split
+    #   - No smplx-specific batch_rodrigues dependency
     """
     Compute parameter regression losses for MHR.
 
@@ -138,6 +176,7 @@ def shape_loss(
 
 
 class MHRLoss(nn.Module):
+    # MAPPED FROM: train/losses/losses.py:HMRLoss (L234)
     """Loss function for MHR-based HMR training.
 
     This loss function computes multiple components:
@@ -152,6 +191,7 @@ class MHRLoss(nn.Module):
     """
 
     def __init__(self, hparams=None):
+        # MAPPED FROM: HMRLoss.__init__ (train/losses/losses.py:L235)
         super(MHRLoss, self).__init__()
         self.criterion_mse = nn.MSELoss()
         self.criterion_mse_noreduce = nn.MSELoss(reduction='none')
@@ -165,14 +205,37 @@ class MHRLoss(nn.Module):
         self.pose_loss_weight = hparams.MODEL.POSE_LOSS_WEIGHT if hparams else 1.0
         self.joint_loss_weight = hparams.MODEL.JOINT_LOSS_WEIGHT if hparams else 5.0
         self.keypoint_loss_weight_2d = hparams.MODEL.KEYPOINT_LOSS_WEIGHT if hparams else 10.0
+        # ← original: self.beta_loss_weight = self.hparams.MODEL.BETA_LOSS_WEIGHT
+        #   Replaced by two separate weights for identity and expression
         self.identity_loss_weight = getattr(
             hparams.MODEL, 'IDENTITY_LOSS_WEIGHT', 1.0) if hparams else 1.0
         self.expr_loss_weight = getattr(hparams.MODEL, 'EXPR_LOSS_WEIGHT',
                                         0.5) if hparams else 0.5
 
+        # ← original: self.num_joints = 49 (SMPL) or 24 (SMPLX) based on TRIAL.version
+        #   MHR uses the full skeleton joint count
         self.num_joints = NUM_MHR_SKELETON_JOINTS
 
     def forward(self, pred, gt):
+        # MAPPED FROM: HMRLoss.forward (train/losses/losses.py:L286)
+        #
+        # Key structural differences from original:
+        #   ORIGINAL:
+        #     - pred: pred_cam, pred_betas, pred_rotmat, pred_joints, pred_keypoints_2d, pred_vertices
+        #     - gt: betas, joints3d, vertices, pose, keypoints_orig, ...
+        #     - smpl_losses(pred_rotmat, pred_betas, gt_pose, gt_betas) → pose + beta losses
+        #     - Conditional loss branches (losses_abl, SUPERVISE_SEGM, SUPERVISE_DEPTH, proj_verts)
+        #     - depth_loss + ssim_loss for depth supervision
+        #     - cross_entropy_loss for segmentation
+        #     - projected_verts_loss for 3D-to-2D projected vertex loss
+        #
+        #   MHR:
+        #     - pred: pred_cam, pred_identity, pred_expr, pred_pose (lbs), pred_joints, pred_vertices
+        #     - gt: identity_coeffs, face_expr_coeffs, lbs_model_params, joints3d_mhr, joints3d, vertices
+        #     - mhr_losses(pred_identity, pred_expr, pred_pose, ...) → identity + expr + pose losses
+        #     - Simplified: no conditional branches, always same loss_dict structure
+        #     - No depth/segm/SSIM/proj-verts losses (handled separately if needed)
+        #     - 3D joint loss: prefers joints3d_smpl, falls back to MHR-to-SMPL index mapping
         """
         Compute total loss for MHR training.
 
@@ -269,6 +332,12 @@ class MHRLoss(nn.Module):
             loss_keypoints = loss_keypoints.mean()
 
         # Compute MHR parameter losses
+        # ← original: smpl_losses(pred_rotmat, pred_betas, gt_pose, gt_betas, criterion)
+        #   which returned (loss_regr_pose, loss_regr_betas)
+        #   Inside: batch_rodrigues(gt_pose.reshape(-1,3)) to convert rotvec→rotmat
+        # ← new: mhr_losses(pred_identity, pred_expr, pred_pose, gt_identity, gt_expr, gt_pose, criterion)
+        #   which returns (loss_regr_identity, loss_regr_expr, loss_regr_pose)
+        #   Direct regression on lbs_model_params — no Rodrigues conversion
         loss_regr_identity, loss_regr_expr, loss_regr_pose = mhr_losses(
             pred_identity,
             pred_expr,
