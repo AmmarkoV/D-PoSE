@@ -133,6 +133,42 @@ class MHRTrainer(pl.LightningModule):
                           img_h=img_h,
                           fl=fl)
 
+    def on_train_start(self):
+        """Probe whether the MHR TorchScript model supports autograd."""
+        logger.info("=" * 60)
+        logger.info("MHR GRAD PROBE — checking if MHR model is differentiable")
+        mhr_head = getattr(self.model, 'mhr_head', None)
+        if mhr_head is None:
+            logger.warning("  mhr_head not found — skipping probe")
+            logger.info("=" * 60)
+            return
+
+        device = next(self.model.parameters()).device
+        B = 2
+        identity = torch.zeros(B, 45,  device=device, requires_grad=True)
+        pose     = torch.zeros(B, 144, device=device, requires_grad=True)
+        expr     = torch.zeros(B, 72,  device=device, requires_grad=True)
+
+        try:
+            verts_cm, _ = mhr_head.mhr_model(
+                identity, model_parameters=pose, face_expr_coeffs=expr,
+                apply_correctives=True,
+            )
+            verts_m = verts_cm * 0.01
+            logger.info(f"  verts_m: shape={tuple(verts_m.shape)}"
+                        f"  requires_grad={verts_m.requires_grad}"
+                        f"  grad_fn={type(verts_m.grad_fn).__name__ if verts_m.grad_fn else None}")
+            if verts_m.requires_grad:
+                verts_m.sum().backward()
+                logger.info(f"  identity.grad: {'OK — grads reach identity_coeffs' if identity.grad is not None else 'NONE — dead gradient path!'}")
+                logger.info(f"  pose.grad:     {'OK — grads reach lbs_model_params' if pose.grad is not None else 'NONE — dead gradient path!'}")
+            else:
+                logger.warning("  verts_m.requires_grad=False — MHR model does NOT support autograd")
+                logger.warning("  loss_keypoints_3d and loss_shape provide ZERO gradient to the network")
+        except Exception as e:
+            logger.error(f"  MHR grad probe raised: {e}")
+        logger.info("=" * 60)
+
     def training_step(self, batch, batch_nb, dataloader_nb=0):
         # MAPPED FROM: HMRTrainer.training_step (hmr_trainer.py:60)
         #
@@ -203,12 +239,16 @@ class MHRTrainer(pl.LightningModule):
             self.log(k, v, logger=True, sync_dist=True)
 
         if batch_nb == 0 and self.current_epoch == 0:
+            logger.info("--- E0 B0 PRED TENSOR GRAD CHECK ---")
             for key in ('joints3d', 'joints3d_smpl', 'vertices'):
                 t = pred.get(key)
                 if t is not None:
                     logger.info(
-                        f'{key}: requires_grad={t.requires_grad} grad_fn={t.grad_fn}'
+                        f"  {key}: shape={tuple(t.shape)}"
+                        f"  requires_grad={t.requires_grad}"
+                        f"  grad_fn={type(t.grad_fn).__name__ if t.grad_fn else None}"
                     )
+            logger.info("--- END E0 B0 CHECK ---")
 
         if batch_nb % 200 == 0:
             loss_summary = {

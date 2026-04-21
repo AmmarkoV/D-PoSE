@@ -248,7 +248,8 @@ assert len(MHR_TO_SMPL_JOINT_INDICES) == NUM_MHR_SKELETON_JOINTS, \
 # =============================================================================
 # File Paths (relative to project root)
 # =============================================================================
-
+# ← original: SMPL_MODEL_DIR, SMPLX_MODEL_DIR, SMPL_MEAN_PARAMS, SMPLX2SMPL
+#   in train/core/config.py — replaced by MHR-specific paths
 # MHR model file paths
 MHR_MODEL_PT = 'mhr_model.pt'  # TorchScript MHR model
 MHR_FACES_DUMP = 'mhr_portable_dump/mhr_conversion_meta_lod1.pt'
@@ -267,8 +268,14 @@ TOTAL_MHR_PARAMS = (
 # =============================================================================
 # Loss Function Defaults
 # =============================================================================
-
-# Default loss weights for MHR training
+# ← original loss weights from train/core/config.py:
+#   LOSS_WEIGHT = 60.        → self.loss_weight
+#   SHAPE_LOSS_WEIGHT = 0.   → replaced by IDENTITY_LOSS_WEIGHT + EXPR_LOSS_WEIGHT
+#   POSE_LOSS_WEIGHT = 1.    → self.pose_loss_weight (same)
+#   JOINT_LOSS_WEIGHT = 5.   → self.joint_loss_weight (same)
+#   KEYPOINT_LOSS_WEIGHT = 10. → self.keypoint_loss_weight_2d (same)
+#   BETA_LOSS_WEIGHT = 0.001 → replaced by IDENTITY_LOSS_WEIGHT (1.0) + EXPR_LOSS_WEIGHT (0.5)
+#   ADVERSARIAL_LOSS_WEIGHT = 0.1 → not used in MHRLoss
 LOSS_WEIGHTS_MHR = {
     'identity': 1.0,  # Identity coefficient loss weight
     'expression': 0.5,  # Face expression loss weight
@@ -285,6 +292,7 @@ LOSS_WEIGHTS_MHR = {
 
 
 def get_mhr_param_names():
+    # ← original: train/core/constants.py had no equivalent — these are new MHR-specific names
     """Return dictionary mapping parameter names to their dimensions."""
     return {
         'identity_coeffs': NUM_IDENTITY_BLENDSHAPES,
@@ -295,5 +303,7 @@ def get_mhr_param_names():
 
 
 def get_total_mhr_output_dim():
+    # ← original: no equivalent — original HMR output dim was pose(135) + shape(11) + cam(3) = 149
+    #   MHR output dim: identity(45) + expr(72) + lbs(204) + cam(3) = 324
     """Return total dimension of MHR network output."""
     return TOTAL_MHR_PARAMS
