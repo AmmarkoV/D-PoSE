@@ -144,10 +144,11 @@ class MHRTrainer(pl.LightningModule):
             return
 
         device = next(self.model.parameters()).device
+        from mhr_constants import NUM_LBS_MODEL_PARAMS, NUM_IDENTITY_BLENDSHAPES, NUM_FACE_EXPRESSION_BLENDSHAPES
         B = 2
-        identity = torch.zeros(B, 45,  device=device, requires_grad=True)
-        pose     = torch.zeros(B, 144, device=device, requires_grad=True)
-        expr     = torch.zeros(B, 72,  device=device, requires_grad=True)
+        identity = torch.zeros(B, NUM_IDENTITY_BLENDSHAPES,  device=device, requires_grad=True)
+        pose     = torch.zeros(B, NUM_LBS_MODEL_PARAMS,      device=device, requires_grad=True)
+        expr     = torch.zeros(B, NUM_FACE_EXPRESSION_BLENDSHAPES, device=device, requires_grad=True)
 
         try:
             verts_cm, _ = mhr_head.mhr_model(
