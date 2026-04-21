@@ -20,13 +20,13 @@ from mhr_constants import (
 
 
 def mhr_losses(
-        pred_identity,
-        pred_expr,
-        pred_pose,
-        gt_identity,
-        gt_expr,
-        gt_pose,
-        criterion,
+    pred_identity,
+    pred_expr,
+    pred_pose,
+    gt_identity,
+    gt_expr,
+    gt_pose,
+    criterion,
 ):
     """
     Compute parameter regression losses for MHR.
@@ -49,7 +49,8 @@ def mhr_losses(
     if len(pred_identity) > 0 and gt_identity is not None:
         loss_regr_identity = criterion(pred_identity, gt_identity)
     else:
-        loss_regr_identity = torch.FloatTensor(1).fill_(0.).to(pred_identity.device)
+        loss_regr_identity = torch.FloatTensor(1).fill_(0.).to(
+            pred_identity.device)
 
     # Expression loss
     if len(pred_expr) > 0 and gt_expr is not None:
@@ -67,9 +68,9 @@ def mhr_losses(
 
 
 def projected_keypoint_loss(
-        pred_keypoints_2d,
-        gt_keypoints_2d,
-        criterion,
+    pred_keypoints_2d,
+    gt_keypoints_2d,
+    criterion,
 ):
     """
     Compute 2D projected keypoint loss.
@@ -90,9 +91,9 @@ def projected_keypoint_loss(
 
 
 def keypoint_3d_loss(
-        pred_keypoints_3d,
-        gt_keypoints_3d,
-        criterion,
+    pred_keypoints_3d,
+    gt_keypoints_3d,
+    criterion,
 ):
     """
     Compute 3D keypoint loss.
@@ -115,9 +116,9 @@ def keypoint_3d_loss(
 
 
 def shape_loss(
-        pred_vertices,
-        gt_vertices,
-        criterion,
+    pred_vertices,
+    gt_vertices,
+    criterion,
 ):
     """
     Compute per-vertex shape reconstruction loss.
@@ -164,8 +165,10 @@ class MHRLoss(nn.Module):
         self.pose_loss_weight = hparams.MODEL.POSE_LOSS_WEIGHT if hparams else 1.0
         self.joint_loss_weight = hparams.MODEL.JOINT_LOSS_WEIGHT if hparams else 5.0
         self.keypoint_loss_weight_2d = hparams.MODEL.KEYPOINT_LOSS_WEIGHT if hparams else 10.0
-        self.identity_loss_weight = getattr(hparams.MODEL, 'IDENTITY_LOSS_WEIGHT', 1.0) if hparams else 1.0
-        self.expr_loss_weight = getattr(hparams.MODEL, 'EXPR_LOSS_WEIGHT', 0.5) if hparams else 0.5
+        self.identity_loss_weight = getattr(
+            hparams.MODEL, 'IDENTITY_LOSS_WEIGHT', 1.0) if hparams else 1.0
+        self.expr_loss_weight = getattr(hparams.MODEL, 'EXPR_LOSS_WEIGHT',
+                                        0.5) if hparams else 0.5
 
         self.num_joints = NUM_MHR_SKELETON_JOINTS
 
@@ -211,7 +214,8 @@ class MHRLoss(nn.Module):
         # Prefer MHR skeleton joints; fall back to SMPL joints if not present.
         # Guard against cached joints3d_mhr with wrong shape (e.g. size 0 at last dim).
         gt_joints = gt.get('joints3d_mhr', gt.get('joints3d'))
-        if gt_joints is not None and (gt_joints.ndim != 3 or gt_joints.shape[-1] < 3):
+        if gt_joints is not None and (gt_joints.ndim != 3
+                                      or gt_joints.shape[-1] < 3):
             gt_joints = gt.get('joints3d')  # fall back to SMPL joints
         gt_vertices = gt.get('vertices')
 
@@ -243,7 +247,8 @@ class MHRLoss(nn.Module):
             gt_keypoints_2d = torch.cat([
                 2 * (_gt_orig[:, :, :2] / img_size) - 1,
                 _gt_orig[:, :, 2:3],
-            ], dim=-1)
+            ],
+                                        dim=-1)
         else:
             gt_keypoints_2d = gt['keypoints']
 
@@ -256,7 +261,8 @@ class MHRLoss(nn.Module):
         )
 
         if self.hparams and self.hparams.TRIAL.bedlam_bbox:
-            loss_keypoints_scale = img_size.squeeze(1) / (gt['scale'] * 200.).unsqueeze(-1)
+            loss_keypoints_scale = img_size.squeeze(1) / (gt['scale'] *
+                                                          200.).unsqueeze(-1)
             loss_keypoints = loss_keypoints * loss_keypoints_scale.unsqueeze(1)
             loss_keypoints = loss_keypoints.mean()
         else:
@@ -278,7 +284,8 @@ class MHRLoss(nn.Module):
         pred_joints_smpl = pred.get('joints3d_smpl')
         if pred_joints_smpl is not None and gt_joints_smpl is not None:
             # Pelvis-center both (average of left hip [1] and right hip [2])
-            pred_pel = (pred_joints_smpl[:, [1]] + pred_joints_smpl[:, [2]]) / 2.0
+            pred_pel = (pred_joints_smpl[:, [1]] +
+                        pred_joints_smpl[:, [2]]) / 2.0
             gt_pel = (gt_joints_smpl[:, [1]] + gt_joints_smpl[:, [2]]) / 2.0
             loss_keypoints_3d = keypoint_3d_loss(
                 pred_joints_smpl - pred_pel,
@@ -290,20 +297,24 @@ class MHRLoss(nn.Module):
             # The first 24 MHR joints are foot/twist procedurals, so direct
             # [:, :24] slicing would compare anatomically unrelated joints.
             idx = torch.as_tensor(
-                MHR_TO_SMPL_JOINT_INDICES, dtype=torch.long,
+                MHR_TO_SMPL_JOINT_INDICES,
+                dtype=torch.long,
                 device=pred['joints3d'].device,
             )
-            pred_full = pred['joints3d']          # [B, 127, 3]
+            pred_full = pred['joints3d']  # [B, 127, 3]
             pred_mapped = pred_full.index_select(1, idx)
             if gt_joints.shape[1] >= max(MHR_TO_SMPL_JOINT_INDICES) + 1:
                 gt_mapped = gt_joints.index_select(1, idx.to(gt_joints.device))
             else:
                 gt_mapped = gt_joints[:, :self.num_joints]
             loss_keypoints_3d = keypoint_3d_loss(
-                pred_mapped, gt_mapped, criterion=criterion,
+                pred_mapped,
+                gt_mapped,
+                criterion=criterion,
             )
         else:
-            loss_keypoints_3d = torch.tensor(0.0, device=pred['joints3d'].device)
+            loss_keypoints_3d = torch.tensor(0.0,
+                                             device=pred['joints3d'].device)
 
         # Compute per-vertex shape loss
         if gt_vertices is not None:
@@ -325,7 +336,7 @@ class MHRLoss(nn.Module):
 
         # Camera loss (encourage reasonable camera parameters)
         pred_cam_clipped = torch.clamp(pred_cam[:, 0], min=-0.5, max=0.5)
-        loss_cam = ((torch.exp(-pred_cam_clipped * 10)) ** 2).mean()
+        loss_cam = ((torch.exp(-pred_cam_clipped * 10))**2).mean()
 
         # Build loss dictionary
         loss_dict = {

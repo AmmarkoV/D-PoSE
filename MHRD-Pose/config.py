@@ -15,8 +15,10 @@ import numpy as np
 MHR_MODEL_DIR = 'assets'
 MHR_MODEL_PT = os.path.join(MHR_MODEL_DIR, 'mhr_model.pt')
 MHR_FBX_PATH = os.path.join(MHR_MODEL_DIR, 'lod1.fbx')
-MHR_BLENDSHAPES_PATH = os.path.join(MHR_MODEL_DIR, 'corrective_blendshapes_lod1.npz')
-MHR_CORRECTIVE_ACTIVATION_PATH = os.path.join(MHR_MODEL_DIR, 'corrective_activation.npz')
+MHR_BLENDSHAPES_PATH = os.path.join(MHR_MODEL_DIR,
+                                    'corrective_blendshapes_lod1.npz')
+MHR_CORRECTIVE_ACTIVATION_PATH = os.path.join(MHR_MODEL_DIR,
+                                              'corrective_activation.npz')
 
 # MHR metadata for portable loading
 MHR_CONVERSION_META_PATH = 'mhr_portable_dump/mhr_conversion_meta_lod1.pt'

@@ -21,7 +21,10 @@ def _stub_chumpy():
     if 'chumpy' not in sys.modules:
         _c = types.ModuleType('chumpy')
         _ch = types.ModuleType('chumpy.ch')
-        class _Ch: pass
+
+        class _Ch:
+            pass
+
         _c.Ch = _Ch
         _c.array = lambda *a, **k: None
         _ch.Ch = _Ch
@@ -52,35 +55,38 @@ class MHRHead(nn.Module):
 
         # Register MHR faces for rendering
         # These come from the MHR character mesh
-        if hasattr(mhr_model, 'character') and hasattr(mhr_model.character, 'mesh'):
+        if hasattr(mhr_model, 'character') and hasattr(mhr_model.character,
+                                                       'mesh'):
             faces = mhr_model.character.mesh.faces
             if isinstance(faces, torch.Tensor):
                 self.register_buffer('faces', faces)
             else:
-                self.register_buffer('faces', torch.tensor(faces, dtype=torch.long))
+                self.register_buffer('faces',
+                                     torch.tensor(faces, dtype=torch.long))
         else:
             # Fallback - will be set later
             self.faces = None
 
         # Load mhr2smpl mapping + SMPL J_regressor for differentiable joint computation
-        _proj_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        _proj_root = os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__)))
         if _proj_root not in sys.path:
             sys.path.insert(0, _proj_root)
 
-        _mapping = np.load(os.path.join(_proj_root, 'assets', 'mhr2smpl_mapping.npz'))
-        _triangle_ids = _mapping['triangle_ids'].astype(np.int64)   # [6890]
-        _baryc = _mapping['baryc_coords'].astype(np.float32)        # [6890, 3]
+        _mapping = np.load(
+            os.path.join(_proj_root, 'assets', 'mhr2smpl_mapping.npz'))
+        _triangle_ids = _mapping['triangle_ids'].astype(np.int64)  # [6890]
+        _baryc = _mapping['baryc_coords'].astype(np.float32)  # [6890, 3]
 
         from load_mhr_portable import load_portable
         _portable = load_portable(
-            os.path.join(_proj_root, 'mhr_portable_dump', 'mhr_dump_lod1.pt')
-        )
+            os.path.join(_proj_root, 'mhr_portable_dump', 'mhr_dump_lod1.pt'))
         _mhr_faces = _portable['interesting']['character.mesh.faces']
         if isinstance(_mhr_faces, torch.Tensor):
             _mhr_faces = _mhr_faces.cpu().numpy()
         else:
             _mhr_faces = np.array(_mhr_faces)
-        _tri_vids = _mhr_faces[_triangle_ids].astype(np.int64)      # [6890, 3]
+        _tri_vids = _mhr_faces[_triangle_ids].astype(np.int64)  # [6890, 3]
 
         # Stub chumpy only for this pickle load, then restore original state
         _saved = {k: sys.modules.get(k) for k in ('chumpy', 'chumpy.ch')}
@@ -102,14 +108,25 @@ class MHRHead(nn.Module):
         if scipy.sparse.issparse(_J_reg):
             _J_reg = np.array(_J_reg.todense()).astype(np.float32)
         else:
-            _J_reg = np.array(_J_reg).astype(np.float32)            # [24, 6890]
+            _J_reg = np.array(_J_reg).astype(np.float32)  # [24, 6890]
 
-        self.register_buffer('_smpl_tri_vids', torch.tensor(_tri_vids, dtype=torch.long))
-        self.register_buffer('_smpl_baryc', torch.tensor(_baryc, dtype=torch.float32))
-        self.register_buffer('_smpl_J_reg', torch.tensor(_J_reg, dtype=torch.float32))
+        self.register_buffer('_smpl_tri_vids',
+                             torch.tensor(_tri_vids, dtype=torch.long))
+        self.register_buffer('_smpl_baryc',
+                             torch.tensor(_baryc, dtype=torch.float32))
+        self.register_buffer('_smpl_J_reg',
+                             torch.tensor(_J_reg, dtype=torch.float32))
 
-    def forward(self, identity_coeffs, lbs_model_params, face_expr_coeffs,
-                cam, cam_intrinsics, bbox_scale, bbox_center, img_w, img_h,
+    def forward(self,
+                identity_coeffs,
+                lbs_model_params,
+                face_expr_coeffs,
+                cam,
+                cam_intrinsics,
+                bbox_scale,
+                bbox_center,
+                img_w,
+                img_h,
                 normalize_joints2d=False):
         """
         Forward pass through MHR model and camera projection.
@@ -139,9 +156,10 @@ class MHRHead(nn.Module):
 
         # Ensure face_expr_coeffs exists
         if face_expr_coeffs is None:
-            face_expr_coeffs = torch.zeros(
-                batch_size, 72, device=device, dtype=identity_coeffs.dtype
-            )
+            face_expr_coeffs = torch.zeros(batch_size,
+                                           72,
+                                           device=device,
+                                           dtype=identity_coeffs.dtype)
 
         # Forward through MHR model
         # MHR outputs vertices in centimeters
@@ -149,8 +167,7 @@ class MHRHead(nn.Module):
             identity_coeffs=identity_coeffs,
             model_parameters=lbs_model_params,
             face_expr_coeffs=face_expr_coeffs,
-            apply_correctives=True
-        )
+            apply_correctives=True)
 
         # Convert from centimeters to meters
         verts_m = verts_cm * self.cm_to_m
@@ -160,10 +177,11 @@ class MHRHead(nn.Module):
         v1 = verts_m[:, self._smpl_tri_vids[:, 1]]
         v2 = verts_m[:, self._smpl_tri_vids[:, 2]]
         w = self._smpl_baryc  # [6890, 3]
-        smpl_verts = (w[:, 0].unsqueeze(0).unsqueeze(-1) * v0
-                      + w[:, 1].unsqueeze(0).unsqueeze(-1) * v1
-                      + w[:, 2].unsqueeze(0).unsqueeze(-1) * v2)  # [B, 6890, 3]
-        smpl_joints3d = torch.einsum('jv,bvd->bjd', self._smpl_J_reg, smpl_verts)  # [B, 24, 3]
+        smpl_verts = (w[:, 0].unsqueeze(0).unsqueeze(-1) * v0 +
+                      w[:, 1].unsqueeze(0).unsqueeze(-1) * v1 +
+                      w[:, 2].unsqueeze(0).unsqueeze(-1) * v2)  # [B, 6890, 3]
+        smpl_joints3d = torch.einsum('jv,bvd->bjd', self._smpl_J_reg,
+                                     smpl_verts)  # [B, 24, 3]
 
         # Extract joint positions from skeleton state.
         # skel_state is [B, 127, 8]: each joint stores [tx, ty, tz, qw, qx, qy, qz, 1]
@@ -186,7 +204,8 @@ class MHRHead(nn.Module):
         # This is kept for backward-compat and visualization but its joint ordering
         # is MHR-specific and does NOT match GT keypoint annotations in BEDLAM/3DPW,
         # so it cannot be used directly for the supervised 2D keypoint loss.
-        _rot = torch.eye(3, device=device).unsqueeze(0).expand(batch_size, -1, -1)
+        _rot = torch.eye(3, device=device).unsqueeze(0).expand(
+            batch_size, -1, -1)
         joints2d = perspective_projection(
             points=joints3d_m,
             rotation=_rot,
@@ -251,14 +270,19 @@ def perspective_projection(points, rotation, translation, cam_intrinsics):
     projected_points = points / points[:, :, -1].unsqueeze(-1)
 
     # Apply camera intrinsics
-    projected_points = torch.einsum('bij,bkj->bki', K, projected_points.float())
+    projected_points = torch.einsum('bij,bkj->bki', K,
+                                    projected_points.float())
 
     return projected_points[:, :, :-1]
 
 
-def convert_pare_to_full_img_cam(
-        pare_cam, bbox_height, bbox_center,
-        img_w, img_h, focal_length, crop_res=224):
+def convert_pare_to_full_img_cam(pare_cam,
+                                 bbox_height,
+                                 bbox_center,
+                                 img_w,
+                                 img_h,
+                                 focal_length,
+                                 crop_res=224):
     """
     Convert PARE-style camera parameters to full image camera translation.
 

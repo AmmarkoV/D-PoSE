@@ -41,7 +41,12 @@ sys.path.insert(0, os.path.join(_PROJECT_ROOT, 'MHR'))
 from train.utils.train_utils import update_hparams
 
 
-def preconvert(dataset_name, options, cache_dir, batch_size, resume, is_train=True):
+def preconvert(dataset_name,
+               options,
+               cache_dir,
+               batch_size,
+               resume,
+               is_train=True):
     """Convert a single dataset to MHR cache.
 
     Processes samples in batches and writes an .npz file under cache_dir.
@@ -49,7 +54,9 @@ def preconvert(dataset_name, options, cache_dir, batch_size, resume, is_train=Tr
     cache_path = Path(cache_dir) / f"{dataset_name}_mhr_params.npz"
 
     if resume and cache_path.exists():
-        logger.info(f"[{dataset_name}] Cache already exists at {cache_path} — skipping")
+        logger.info(
+            f"[{dataset_name}] Cache already exists at {cache_path} — skipping"
+        )
         return
 
     logger.info(f"[{dataset_name}] Starting conversion → {cache_path}")
@@ -63,7 +70,8 @@ def preconvert(dataset_name, options, cache_dir, batch_size, resume, is_train=Tr
     ds._converter_initialized = True
 
     n = len(ds)
-    logger.info(f"[{dataset_name}] {n} samples to convert (batch_size={batch_size})")
+    logger.info(
+        f"[{dataset_name}] {n} samples to convert (batch_size={batch_size})")
 
     all_identity = []
     all_expr = []
@@ -81,7 +89,6 @@ def preconvert(dataset_name, options, cache_dir, batch_size, resume, is_train=Tr
                 end = min(i + batch_size, n)
                 batch_poses = []
                 batch_betas = []
-                batch_transl = []
 
                 for j in range(i, end):
                     # Read SMPL params directly from dataset arrays — avoids
@@ -89,18 +96,19 @@ def preconvert(dataset_name, options, cache_dir, batch_size, resume, is_train=Tr
                     # aren't needed for parameter conversion).
                     pose = torch.from_numpy(ds.pose_cam[j].copy()).float()
                     betas = torch.from_numpy(ds.betas[j].copy()).float()
-                    if hasattr(ds, 'trans_cam'):
-                        transl = torch.from_numpy(ds.trans_cam[j].copy()).float()
-                    else:
-                        transl = torch.zeros(3)
                     batch_poses.append(pose)
                     batch_betas.append(betas)
-                    batch_transl.append(transl)
 
+                # transl is intentionally omitted: _convert_smpl_to_mhr always
+                # zeroes transl (line "transl=torch.zeros(batch_size, 3)") so the
+                # cached MHR vertices are body-local (no camera translation applied).
+                # The camera translation (item['translation']) is read at runtime
+                # from the original dataset and used by the renderer separately.
                 smpl_data = {
-                    'pose':   torch.stack(batch_poses),    # [B, 165]
-                    'betas':  torch.stack(batch_betas),    # [B, 10]
-                    'transl': torch.stack(batch_transl),   # [B, 3]
+                    'pose': torch.stack(batch_poses),  # [B, 165]
+                    'betas': torch.stack(batch_betas),  # [B, 10]
+                    'transl': torch.zeros(len(batch_poses),
+                                          3),  # always zeroed
                 }
 
                 mhr_data = ds._convert_smpl_to_mhr(smpl_data)
@@ -132,19 +140,35 @@ def preconvert(dataset_name, options, cache_dir, batch_size, resume, is_train=Tr
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Pre-convert datasets to MHR cache")
-    parser.add_argument('--cfg',        type=str, required=True,
-                        help='Path to config yaml (e.g. MHRD-Pose/config_mhr.yaml)')
-    parser.add_argument('--datasets',   nargs='+', default=None,
-                        help='Dataset names to convert. Default: reads from config.')
-    parser.add_argument('--batch_size', type=int, default=64,
+    parser = argparse.ArgumentParser(
+        description="Pre-convert datasets to MHR cache")
+    parser.add_argument(
+        '--cfg',
+        type=str,
+        required=True,
+        help='Path to config yaml (e.g. MHRD-Pose/config_mhr.yaml)')
+    parser.add_argument(
+        '--datasets',
+        nargs='+',
+        default=None,
+        help='Dataset names to convert. Default: reads from config.')
+    parser.add_argument('--batch_size',
+                        type=int,
+                        default=64,
                         help='Samples per conversion batch (default: 64)')
-    parser.add_argument('--cache_dir',  type=str, default=None,
-                        help='Output directory. Default: reads CACHE_DIR from config.')
-    parser.add_argument('--resume',      action='store_true',
+    parser.add_argument(
+        '--cache_dir',
+        type=str,
+        default=None,
+        help='Output directory. Default: reads CACHE_DIR from config.')
+    parser.add_argument('--resume',
+                        action='store_true',
                         help='Skip datasets whose cache already exists.')
-    parser.add_argument('--regenerate', action='store_true',
-                        help='Delete the cache directory before converting (forces full rebuild).')
+    parser.add_argument(
+        '--regenerate',
+        action='store_true',
+        help=
+        'Delete the cache directory before converting (forces full rebuild).')
     args = parser.parse_args()
 
     hparams = update_hparams(args.cfg)
@@ -153,10 +177,10 @@ def main():
     if args.datasets:
         # When specified manually, try train first, fall back to val
         train_datasets = set(args.datasets)
-        val_datasets   = set()
+        val_datasets = set()
     else:
         train_datasets = set(hparams.DATASET.DATASETS_AND_RATIOS.split('_'))
-        val_datasets   = set(hparams.DATASET.VAL_DS.split('_'))
+        val_datasets = set(hparams.DATASET.VAL_DS.split('_'))
 
     # deduplicate while preserving order: train first, then val-only
     seen = set()
@@ -166,10 +190,9 @@ def main():
             datasets.append(d)
             seen.add(d)
 
-    # Resolve cache dir
-    cache_dir = args.cache_dir or getattr(
-        getattr(hparams, 'MHR', None), 'CACHE_DIR', 'data/mhr_cache'
-    )
+    # Resolve cache dir — config stores CACHE_DIR under DATASET, not MHR
+    cache_dir = args.cache_dir or getattr(hparams.DATASET, 'CACHE_DIR',
+                                          'data/mhr_cache')
 
     if args.regenerate and Path(cache_dir).exists():
         import shutil
@@ -183,7 +206,12 @@ def main():
 
     for ds_name in datasets:
         is_train = ds_name not in val_datasets or ds_name in train_datasets
-        preconvert(ds_name, hparams.DATASET, cache_dir, args.batch_size, args.resume, is_train=is_train)
+        preconvert(ds_name,
+                   hparams.DATASET,
+                   cache_dir,
+                   args.batch_size,
+                   args.resume,
+                   is_train=is_train)
 
     logger.info("All datasets converted.")
 

@@ -32,10 +32,12 @@ def _extract_joints_from_skel_state(skel_state: torch.Tensor) -> torch.Tensor:
     """
     global _SKEL_STATE_FORMAT_LOGGED
     if not _SKEL_STATE_FORMAT_LOGGED:
-        logger.info(f"skel_state shape={skel_state.shape} dtype={skel_state.dtype}")
+        logger.info(
+            f"skel_state shape={skel_state.shape} dtype={skel_state.dtype}")
         _SKEL_STATE_FORMAT_LOGGED = True
 
-    if skel_state.ndim == 4 and skel_state.shape[-2] == 4 and skel_state.shape[-1] == 4:
+    if skel_state.ndim == 4 and skel_state.shape[-2] == 4 and skel_state.shape[
+            -1] == 4:
         # [N, J, 4, 4] — homogeneous matrix; translation is last column first 3 rows
         return skel_state[:, :, :3, 3].float() * 0.01
     elif skel_state.ndim == 3:
@@ -50,14 +52,20 @@ def _extract_joints_from_skel_state(skel_state: torch.Tensor) -> torch.Tensor:
             logger.warning(
                 f"skel_state last dim too small ({last}); falling back to zero joints"
             )
-            return torch.zeros(skel_state.shape[0], skel_state.shape[1], 3,
-                               dtype=torch.float32, device=skel_state.device)
+            return torch.zeros(skel_state.shape[0],
+                               skel_state.shape[1],
+                               3,
+                               dtype=torch.float32,
+                               device=skel_state.device)
     else:
         logger.warning(
             f"Unknown skel_state format {skel_state.shape}; falling back to zero joints"
         )
-        return torch.zeros(skel_state.shape[0], 127, 3,
-                           dtype=torch.float32, device=skel_state.device)
+        return torch.zeros(skel_state.shape[0],
+                           127,
+                           3,
+                           dtype=torch.float32,
+                           device=skel_state.device)
 
 
 class DatasetHMR(OriginalDatasetHMR):
@@ -104,7 +112,8 @@ class DatasetHMR(OriginalDatasetHMR):
         self._converter_initialized = False
 
         if self.mhr_params_cached is None:
-            logger.info(f"No cache found for {dataset}, will convert on-the-fly")
+            logger.info(
+                f"No cache found for {dataset}, will convert on-the-fly")
         else:
             logger.info(f"Loaded cached MHR parameters for {dataset}")
 
@@ -135,13 +144,16 @@ class DatasetHMR(OriginalDatasetHMR):
             import os
             sys.path.append('MHR/')
             cwd = os.getcwd()
-            print("Working Directory is ",cwd) # Working Directory is  /home/user/workspace
+            print("Working Directory is ",
+                  cwd)  # Working Directory is  /home/user/workspace
             from mhr.mhr import MHR
-            
+
             # conversion.py uses local-relative imports so its directory must be on path
             import sys as _sys, os as _os
-            _proj_root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
-            _conv_dir = _os.path.join(_proj_root, "MHR", "tools", "mhr_smpl_conversion")
+            _proj_root = _os.path.dirname(
+                _os.path.dirname(_os.path.abspath(__file__)))
+            _conv_dir = _os.path.join(_proj_root, "MHR", "tools",
+                                      "mhr_smpl_conversion")
             if _conv_dir not in _sys.path:
                 _sys.path.insert(0, _conv_dir)
             from conversion import Conversion
@@ -158,7 +170,8 @@ class DatasetHMR(OriginalDatasetHMR):
                 use_pca=False,
                 flat_hand_mean=True,
                 dtype=torch.float32,
-            ).cpu()  # explicit .cpu() — must not go to CUDA, runs in DataLoader workers
+            ).cpu(
+            )  # explicit .cpu() — must not go to CUDA, runs in DataLoader workers
 
             # Create MHR Python instance — Conversion needs .character attribute
             # access which TorchScript RecursiveScriptModule does not expose.
@@ -166,7 +179,8 @@ class DatasetHMR(OriginalDatasetHMR):
             from config import MHR_MODEL_DIR, MHR_LOD
             import os as _os2
             from pathlib import Path as _Path
-            _proj_root2 = _os2.path.dirname(_os2.path.dirname(_os2.path.abspath(__file__)))
+            _proj_root2 = _os2.path.dirname(
+                _os2.path.dirname(_os2.path.abspath(__file__)))
             _assets_path = _Path(_proj_root2) / MHR_MODEL_DIR
             self.mhr_instance = MHR.from_files(
                 folder=_assets_path,
@@ -175,12 +189,10 @@ class DatasetHMR(OriginalDatasetHMR):
             )
 
             # Create converter
-            self.converter = Conversion(
-                mhr_model=self.mhr_instance,
-                smpl_model=self.smplx_model,
-                method="pytorch",
-                batch_size=64
-            )
+            self.converter = Conversion(mhr_model=self.mhr_instance,
+                                        smpl_model=self.smplx_model,
+                                        method="pytorch",
+                                        batch_size=64)
 
             logger.info("SMPL→MHR converter initialized")
 
@@ -228,9 +240,11 @@ class DatasetHMR(OriginalDatasetHMR):
         # above the pelvis only when py < 0, i.e. Y-down) and flipping the
         # rendered mesh upside-down.
         smplx_output = self.smplx_model(
-            betas=smpl_data['betas'].cpu()[:, :10],  # dataset pads to 11; smplx expects 10
-            body_pose=smpl_data['pose'][:, 3:66].cpu(),      # 21 joints × 3
-            global_orient=smpl_data['pose'][:, :3].cpu(),    # camera-space body orientation
+            betas=smpl_data['betas'].cpu()
+            [:, :10],  # dataset pads to 11; smplx expects 10
+            body_pose=smpl_data['pose'][:, 3:66].cpu(),  # 21 joints × 3
+            global_orient=smpl_data['pose']
+            [:, :3].cpu(),  # camera-space body orientation
             transl=torch.zeros(batch_size, 3),
             jaw_pose=torch.zeros(batch_size, 3),
             leye_pose=torch.zeros(batch_size, 3),
@@ -256,21 +270,24 @@ class DatasetHMR(OriginalDatasetHMR):
                 single_identity=False,
                 is_tracking=False,
                 return_mhr_parameters=True,
-                return_mhr_vertices=True,   # numpy [N, V, 3] in cm
+                return_mhr_vertices=True,  # numpy [N, V, 3] in cm
                 return_mhr_meshes=False,
             )
 
-        mhr_params = result.result_parameters   # dict of tensors
-        mhr_verts_np = result.result_vertices   # numpy [N, V, 3] in cm
+        mhr_params = result.result_parameters  # dict of tensors
+        mhr_verts_np = result.result_vertices  # numpy [N, V, 3] in cm
 
         # Extract parameter tensors
-        identity_coeffs  = mhr_params.get('identity_coeffs',  torch.zeros(batch_size, 45))
-        face_expr_coeffs = mhr_params.get('face_expr_coeffs', torch.zeros(batch_size, 72))
-        lbs_model_params = mhr_params.get('lbs_model_params', torch.zeros(batch_size, 204))
+        identity_coeffs = mhr_params.get('identity_coeffs',
+                                         torch.zeros(batch_size, 45))
+        face_expr_coeffs = mhr_params.get('face_expr_coeffs',
+                                          torch.zeros(batch_size, 72))
+        lbs_model_params = mhr_params.get('lbs_model_params',
+                                          torch.zeros(batch_size, 204))
 
         # Detach params — they were produced inside an enable_grad context but we
         # only need the values for caching / GT supervision, not for backprop here.
-        identity_coeffs  = identity_coeffs.detach()
+        identity_coeffs = identity_coeffs.detach()
         face_expr_coeffs = face_expr_coeffs.detach()
         lbs_model_params = lbs_model_params.detach()
 
@@ -325,14 +342,19 @@ class DatasetHMR(OriginalDatasetHMR):
         if self.mhr_params_cached is not None:
             # Load from cache
             try:
-                mhr_identity = self.mhr_params_cached['identity_coeffs'][index:index+1]
-                mhr_expr = self.mhr_params_cached['face_expr_coeffs'][index:index+1]
-                mhr_pose = self.mhr_params_cached['lbs_model_params'][index:index+1]
-                mhr_verts = self.mhr_params_cached['vertices'][index:index+1]
-                mhr_joints = self.mhr_params_cached['joints3d'][index:index+1]
+                mhr_identity = self.mhr_params_cached['identity_coeffs'][
+                    index:index + 1]
+                mhr_expr = self.mhr_params_cached['face_expr_coeffs'][
+                    index:index + 1]
+                mhr_pose = self.mhr_params_cached['lbs_model_params'][
+                    index:index + 1]
+                mhr_verts = self.mhr_params_cached['vertices'][index:index + 1]
+                mhr_joints = self.mhr_params_cached['joints3d'][index:index +
+                                                                1]
             except KeyError:
                 # Cache missing some fields, fall back to on-the-fly
-                mhr_data = self._convert_single_sample(smpl_pose, smpl_betas, smpl_transl)
+                mhr_data = self._convert_single_sample(smpl_pose, smpl_betas,
+                                                       smpl_transl)
                 mhr_identity = mhr_data['identity_coeffs']
                 mhr_expr = mhr_data['face_expr_coeffs']
                 mhr_pose = mhr_data['lbs_model_params']
@@ -340,7 +362,8 @@ class DatasetHMR(OriginalDatasetHMR):
                 mhr_joints = mhr_data['joints3d']
         else:
             # On-the-fly conversion
-            mhr_data = self._convert_single_sample(smpl_pose, smpl_betas, smpl_transl)
+            mhr_data = self._convert_single_sample(smpl_pose, smpl_betas,
+                                                   smpl_transl)
             mhr_identity = mhr_data['identity_coeffs']
             mhr_expr = mhr_data['face_expr_coeffs']
             mhr_pose = mhr_data['lbs_model_params']
@@ -356,8 +379,10 @@ class DatasetHMR(OriginalDatasetHMR):
         item['identity_coeffs'] = mhr_identity.squeeze(0)
         item['face_expr_coeffs'] = mhr_expr.squeeze(0)
         item['lbs_model_params'] = mhr_pose.squeeze(0)
-        item['vertices'] = mhr_verts.squeeze(0)       # [V_mhr, 3] — overrides SMPL verts
-        item['joints3d_mhr'] = mhr_joints.squeeze(0)  # cached value may still be wrong
+        item['vertices'] = mhr_verts.squeeze(
+            0)  # [V_mhr, 3] — overrides SMPL verts
+        item['joints3d_mhr'] = mhr_joints.squeeze(
+            0)  # cached value may still be wrong
 
         return item
 

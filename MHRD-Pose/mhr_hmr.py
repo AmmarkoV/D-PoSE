@@ -48,15 +48,13 @@ class MHRHMR(nn.Module):
         mhr_model: Pre-loaded MHR model instance
     """
 
-    def __init__(
-            self,
-            backbone='resnet50',
-            img_res=224,
-            focal_length=5000,
-            pretrained_ckpt=None,
-            hparams=None,
-            mhr_model=None
-    ):
+    def __init__(self,
+                 backbone='resnet50',
+                 img_res=224,
+                 focal_length=5000,
+                 pretrained_ckpt=None,
+                 hparams=None,
+                 mhr_model=None):
         super(MHRHMR, self).__init__()
         self.hparams = hparams
         self.img_res = img_res
@@ -80,7 +78,8 @@ class MHRHMR(nn.Module):
             _backbone_name = backbone.split('-')[0]
             _feat_channels = _backbone_channels.get(_backbone_name, 480)
             _use_depth = bool(hparams.DATASET.USE_DEPTH) if hparams else False
-            self.head = MHRRegressor(input_dim=_feat_channels, use_depth=_use_depth)
+            self.head = MHRRegressor(input_dim=_feat_channels,
+                                     use_depth=_use_depth)
 
             if mhr_model is not None:
                 self.mhr_head = MHRHead(mhr_model, img_res=img_res)
@@ -108,15 +107,13 @@ class MHRHMR(nn.Module):
         self.one_euro_cam = None
         self.use_one_euro = True
 
-    def forward(
-            self,
-            images,
-            bbox_scale=None,
-            bbox_center=None,
-            img_w=None,
-            img_h=None,
-            fl=None
-    ):
+    def forward(self,
+                images,
+                bbox_scale=None,
+                bbox_center=None,
+                img_w=None,
+                img_h=None,
+                fl=None):
         """
         Forward pass predicting MHR parameters and computing vertices.
 
@@ -146,7 +143,7 @@ class MHRHMR(nn.Module):
         if fl is not None:
             focal_length = fl
         else:
-            focal_length = (img_w * img_w + img_h * img_h) ** 0.5
+            focal_length = (img_w * img_w + img_h * img_h)**0.5
             focal_length = focal_length.repeat(2).view(batch_size, 2)
 
         # Initialize camera intrinsic matrix
@@ -160,9 +157,12 @@ class MHRHMR(nn.Module):
             # Compute bbox info (from CLIFF repository)
             cx, cy = bbox_center[:, 0], bbox_center[:, 1]
             b = bbox_scale * 200
-            bbox_info = torch.stack([cx - img_w / 2., cy - img_h / 2., b], dim=-1)
+            bbox_info = torch.stack([cx - img_w / 2., cy - img_h / 2., b],
+                                    dim=-1)
             bbox_info = bbox_info.cuda().float()
-            bbox_info[:, :2] = bbox_info[:, :2] / cam_intrinsics[:, 0, 0].unsqueeze(-1)
+            bbox_info[:, :2] = bbox_info[:, :2] / cam_intrinsics[:, 0,
+                                                                 0].unsqueeze(
+                                                                     -1)
             bbox_info[:, 2] = bbox_info[:, 2] / cam_intrinsics[:, 0, 0]
             bbox_info = bbox_info.cuda().float()
 
@@ -172,24 +172,44 @@ class MHRHMR(nn.Module):
                 cam_shape_feat = upsampled_feature
 
                 if not self.hparams.DATASET.USE_DEPTH:
-                    attention_pose = self.attention(upsampled_feature, segmentation[:, 1:, :, :], None)
-                    attention_cam_shape = self.attention(cam_shape_feat, segmentation[:, 1:, :, :], None)
-                    mhr_output = self.head(attention_pose, attention_cam_shape, attention_cam_shape, bbox_info)
+                    attention_pose = self.attention(upsampled_feature,
+                                                    segmentation[:, 1:, :, :],
+                                                    None)
+                    attention_cam_shape = self.attention(
+                        cam_shape_feat, segmentation[:, 1:, :, :], None)
+                    mhr_output = self.head(attention_pose, attention_cam_shape,
+                                           attention_cam_shape, bbox_info)
                 else:
                     depth, depth_feats = self.depth_decoder(features)
                     orig_depth = depth.clone()
                     depth = depth.repeat(1, segmentation.shape[1], 1, 1)
 
                     if not self.hparams.DATASET.USE_DEPTH_CONC:
-                        attention_pose = self.attention(upsampled_feature, segmentation[:, 1:, :, :], depth[:, 1:, :, :])
-                        attention_cam_shape = self.attention(cam_shape_feat, segmentation[:, 1:, :, :], depth[:, 1:, :, :])
-                        mhr_output = self.head(attention_pose, attention_cam_shape, attention_cam_shape, bbox_info, depth_feats)
+                        attention_pose = self.attention(
+                            upsampled_feature, segmentation[:, 1:, :, :],
+                            depth[:, 1:, :, :])
+                        attention_cam_shape = self.attention(
+                            cam_shape_feat, segmentation[:, 1:, :, :],
+                            depth[:, 1:, :, :])
+                        mhr_output = self.head(attention_pose,
+                                               attention_cam_shape,
+                                               attention_cam_shape, bbox_info,
+                                               depth_feats)
                     else:
-                        upsampled_feature = torch.cat([upsampled_feature, depth_feats], dim=1)
-                        attention_pose = self.attention(upsampled_feature, segmentation[:, 1:, :, :], depth[:, 1:, :, :])
-                        cam_shape_feat = torch.cat([cam_shape_feat, depth_feats], dim=1)
-                        attention_cam_shape = self.attention(cam_shape_feat, segmentation[:, 1:, :, :], depth[:, 1:, :, :])
-                        mhr_output = self.head(attention_pose, attention_cam_shape, attention_cam_shape, bbox_info, None)
+                        upsampled_feature = torch.cat(
+                            [upsampled_feature, depth_feats], dim=1)
+                        attention_pose = self.attention(
+                            upsampled_feature, segmentation[:, 1:, :, :],
+                            depth[:, 1:, :, :])
+                        cam_shape_feat = torch.cat(
+                            [cam_shape_feat, depth_feats], dim=1)
+                        attention_cam_shape = self.attention(
+                            cam_shape_feat, segmentation[:, 1:, :, :],
+                            depth[:, 1:, :, :])
+                        mhr_output = self.head(attention_pose,
+                                               attention_cam_shape,
+                                               attention_cam_shape, bbox_info,
+                                               None)
             else:
                 # No-segmentation path.
                 # The depth decoder (UNET) was designed for HRNet-w48 channel
@@ -204,9 +224,13 @@ class MHRHMR(nn.Module):
                 # Pool the spatial dimensions down to num_joints positions so
                 # the regressor receives [B, C, J] as it expects.
                 pose_feat = F.adaptive_avg_pool2d(
-                    features[0], (self.head.num_joints, 1)
-                ).squeeze(-1)  # [B, C, J]
-                mhr_output = self.head(pose_feat, pose_feat, pose_feat, bbox_info, depth_feats=None)
+                    features[0],
+                    (self.head.num_joints, 1)).squeeze(-1)  # [B, C, J]
+                mhr_output = self.head(pose_feat,
+                                       pose_feat,
+                                       pose_feat,
+                                       bbox_info,
+                                       depth_feats=None)
 
             # Apply OneEuroFilter for temporal smoothing
             if self.one_euro_cam is None and self.use_one_euro:
@@ -214,36 +238,41 @@ class MHRHMR(nn.Module):
                     np.zeros_like(mhr_output['pred_cam'][0].detach().cpu()),
                     mhr_output['pred_cam'][0].detach().cpu().numpy(),
                     min_cutoff=self.min_cutoff,
-                    beta=self.beta
-                )
+                    beta=self.beta)
                 self.one_euro_pose = OneEuroFilter(
                     np.zeros_like(mhr_output['pred_pose'][0].detach().cpu()),
                     mhr_output['pred_pose'][0].detach().cpu().numpy(),
                     min_cutoff=self.min_cutoff,
-                    beta=self.beta
-                )
+                    beta=self.beta)
                 self.one_euro_identity = OneEuroFilter(
-                    np.zeros_like(mhr_output['pred_identity'][0].detach().cpu()),
+                    np.zeros_like(
+                        mhr_output['pred_identity'][0].detach().cpu()),
                     mhr_output['pred_identity'][0].detach().cpu().numpy(),
                     min_cutoff=self.min_cutoff,
-                    beta=self.beta
-                )
+                    beta=self.beta)
 
             if self.use_one_euro:
                 self.t += 1
-                t_pose = np.ones_like(mhr_output['pred_pose'][0].detach().cpu()) * self.t
-                t_identity = np.ones_like(mhr_output['pred_identity'][0].detach().cpu()) * self.t
-                t_cam = np.ones_like(mhr_output['pred_cam'][0].detach().cpu()) * self.t
+                t_pose = np.ones_like(
+                    mhr_output['pred_pose'][0].detach().cpu()) * self.t
+                t_identity = np.ones_like(
+                    mhr_output['pred_identity'][0].detach().cpu()) * self.t
+                t_cam = np.ones_like(
+                    mhr_output['pred_cam'][0].detach().cpu()) * self.t
 
                 mhr_output['pred_cam'] = torch.tensor(
-                    self.one_euro_cam(t_cam, mhr_output['pred_cam'].detach().cpu().numpy())
-                ).cuda()
+                    self.one_euro_cam(
+                        t_cam,
+                        mhr_output['pred_cam'].detach().cpu().numpy())).cuda()
                 mhr_output['pred_pose'] = torch.tensor(
-                    self.one_euro_pose(t_pose, mhr_output['pred_pose'].detach().cpu().numpy())
-                ).cuda()
+                    self.one_euro_pose(
+                        t_pose,
+                        mhr_output['pred_pose'].detach().cpu().numpy())).cuda(
+                        )
                 mhr_output['pred_identity'] = torch.tensor(
-                    self.one_euro_identity(t_identity, mhr_output['pred_identity'].detach().cpu().numpy())
-                ).cuda()
+                    self.one_euro_identity(
+                        t_identity, mhr_output['pred_identity'].detach().cpu().
+                        numpy())).cuda()
 
             # Forward through MHR head to get vertices and joints
             mhr_forward_output = self.mhr_head(
@@ -263,7 +292,8 @@ class MHRHMR(nn.Module):
             mhr_forward_output.update(mhr_output)
 
             # Return with optional depth/segmentation
-            if self.hparams and (self.hparams.DATASET.USE_DEPTH or self.hparams.DATASET.USE_SEGM):
+            if self.hparams and (self.hparams.DATASET.USE_DEPTH
+                                 or self.hparams.DATASET.USE_SEGM):
                 if self.hparams.DATASET.USE_DEPTH:
                     return mhr_forward_output, orig_depth, None, None, segmentation
                 else:

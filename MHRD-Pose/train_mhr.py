@@ -35,9 +35,10 @@ from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
 # add the directory itself to sys.path and import its modules directly.
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.dirname(_THIS_DIR)
-sys.path.insert(0, _PROJECT_ROOT)                           # D-PoSE root  (for 'train.*' imports)
-sys.path.insert(0, _THIS_DIR)                               # MHRD-Pose dir (for 'mhr_trainer' etc.)
-sys.path.insert(0, os.path.join(_PROJECT_ROOT, 'MHR'))      # MHR root (for 'mhr.mhr' and 'mhr.io' imports)
+sys.path.insert(0, _PROJECT_ROOT)  # D-PoSE root  (for 'train.*' imports)
+sys.path.insert(0, _THIS_DIR)  # MHRD-Pose dir (for 'mhr_trainer' etc.)
+sys.path.insert(0, os.path.join(
+    _PROJECT_ROOT, 'MHR'))  # MHR root (for 'mhr.mhr' and 'mhr.io' imports)
 
 from mhr_trainer import MHRTrainer
 from train.utils.train_utils import update_hparams
@@ -64,11 +65,9 @@ def train(hparams, fast_dev_run=False):
     logger.info(f'Hyperparameters: \n {hparams}')
 
     # Loggers
-    wandb_logger = WandbLogger(
-        project='Depth HMR MHR',
-        log_model=True,
-        name=hparams.DATASET.RUN_NAME
-    )
+    wandb_logger = WandbLogger(project='Depth HMR MHR',
+                               log_model=True,
+                               name=hparams.DATASET.RUN_NAME)
     experiment_loggers = []
 
     # TensorBoard logger
@@ -103,7 +102,7 @@ def train(hparams, fast_dev_run=False):
         gradient_clip_val=1.5,
     )
 
-    if args.test:
+    if hparams.RUN_TEST:
         logger.info('*** Started testing ***')
         ckpt = hparams.TRAINING.RESUME
 
@@ -128,7 +127,10 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
 
     parser.add_argument('--cfg', type=str, help='cfg file path')
-    parser.add_argument('--log_dir', type=str, help='log dir path', default='./logs/mhr')
+    parser.add_argument('--log_dir',
+                        type=str,
+                        help='log dir path',
+                        default='./logs/mhr')
     parser.add_argument('--fdr', action='store_true')
     parser.add_argument('--test', action='store_true')
     parser.add_argument('--resume', action='store_true')
@@ -174,9 +176,7 @@ if __name__ == '__main__':
             yaml.dump(obj, f, default_flow_style=False)
 
     # Save final config
-    save_dict_to_yaml(
-        unflatten(flatten(hparams)),
-        os.path.join(hparams.LOG_DIR, 'config_mhr_to_run.yaml')
-    )
+    save_dict_to_yaml(unflatten(flatten(hparams)),
+                      os.path.join(hparams.LOG_DIR, 'config_mhr_to_run.yaml'))
 
     train(hparams, fast_dev_run=args.fdr)

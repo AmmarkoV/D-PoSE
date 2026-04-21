@@ -43,7 +43,9 @@ class MHRTrainer(pl.LightningModule):
         from config import MHR_MODEL_PT
 
         # Load MHR model
-        self.mhr_model = torch.load(MHR_MODEL_PT, map_location='cpu', weights_only=False)
+        self.mhr_model = torch.load(MHR_MODEL_PT,
+                                    map_location='cpu',
+                                    weights_only=False)
         self.add_module('mhr_model', self.mhr_model)
 
         # Initialize MHR-based HMR model
@@ -64,17 +66,20 @@ class MHRTrainer(pl.LightningModule):
         self.val_ds = self.val_dataset()
 
         self.save_itr = 0
-        self._val_step_outputs = []  # accumulated by validation_step; read by on_validation_epoch_end
+        self._val_step_outputs = [
+        ]  # accumulated by validation_step; read by on_validation_epoch_end
 
         # Renderer for visualization
         # mhr_model is a TorchScript RecursiveScriptModule; .character is not
         # accessible via __getattr__. Load faces from the portable dump instead.
         import sys as _sys
-        _proj_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        _proj_root = os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__)))
         if _proj_root not in _sys.path:
             _sys.path.insert(0, _proj_root)
         from load_mhr_portable import load_portable
-        _portable = load_portable(os.path.join(_proj_root, 'mhr_portable_dump', 'mhr_dump_lod1.pt'))
+        _portable = load_portable(
+            os.path.join(_proj_root, 'mhr_portable_dump', 'mhr_dump_lod1.pt'))
         _faces = _portable['interesting']['character.mesh.faces']
         if isinstance(_faces, torch.Tensor):
             self.faces = _faces.cpu().numpy()
@@ -90,8 +95,12 @@ class MHRTrainer(pl.LightningModule):
 
     def forward(self, x, bbox_center, bbox_scale, img_w, img_h, fl=None):
         """Forward pass through MHR-based HMR model."""
-        return self.model(x, bbox_center=bbox_center, bbox_scale=bbox_scale,
-                         img_w=img_w, img_h=img_h, fl=fl)
+        return self.model(x,
+                          bbox_center=bbox_center,
+                          bbox_scale=bbox_scale,
+                          img_w=img_w,
+                          img_h=img_h,
+                          fl=fl)
 
     def training_step(self, batch, batch_nb, dataloader_nb=0):
         """Training step with MHR loss computation.
@@ -114,10 +123,12 @@ class MHRTrainer(pl.LightningModule):
         batch_size = batch['img'].shape[0]
 
         # Forward pass
-        pred, depth, _, _, part_segms = self(
-            images, bbox_center=bbox_center, bbox_scale=bbox_scale,
-            img_w=img_w, img_h=img_h, fl=fl
-        )
+        pred, depth, _, _, part_segms = self(images,
+                                             bbox_center=bbox_center,
+                                             bbox_scale=bbox_scale,
+                                             img_w=img_w,
+                                             img_h=img_h,
+                                             fl=fl)
         pred['depth'] = depth
         pred['part_segms'] = part_segms
 
@@ -128,17 +139,17 @@ class MHRTrainer(pl.LightningModule):
         mhr_head = getattr(self.model, 'mhr_head', None)
         if gt_verts is not None and mhr_head is not None and 'joints3d_smpl' in pred:
             with torch.no_grad():
-                tv = mhr_head._smpl_tri_vids   # [6890, 3]
-                w = mhr_head._smpl_baryc        # [6890, 3]
+                tv = mhr_head._smpl_tri_vids  # [6890, 3]
+                w = mhr_head._smpl_baryc  # [6890, 3]
                 gv0 = gt_verts[:, tv[:, 0]]
                 gv1 = gt_verts[:, tv[:, 1]]
                 gv2 = gt_verts[:, tv[:, 2]]
-                gt_smpl_v = (w[:, 0].unsqueeze(0).unsqueeze(-1) * gv0
-                           + w[:, 1].unsqueeze(0).unsqueeze(-1) * gv1
-                           + w[:, 2].unsqueeze(0).unsqueeze(-1) * gv2)
-                batch['joints3d'] = torch.einsum(
-                    'jv,bvd->bjd', mhr_head._smpl_J_reg, gt_smpl_v
-                )  # [B, 24, 3]
+                gt_smpl_v = (w[:, 0].unsqueeze(0).unsqueeze(-1) * gv0 +
+                             w[:, 1].unsqueeze(0).unsqueeze(-1) * gv1 +
+                             w[:, 2].unsqueeze(0).unsqueeze(-1) * gv2)
+                batch['joints3d'] = torch.einsum('jv,bvd->bjd',
+                                                 mhr_head._smpl_J_reg,
+                                                 gt_smpl_v)  # [B, 24, 3]
 
         # Compute loss
         loss, loss_dict = self.loss_fn(pred=pred, gt=batch)
@@ -152,15 +163,27 @@ class MHRTrainer(pl.LightningModule):
             for key in ('joints3d', 'joints3d_smpl', 'vertices'):
                 t = pred.get(key)
                 if t is not None:
-                    logger.info(f'{key}: requires_grad={t.requires_grad} grad_fn={t.grad_fn}')
+                    logger.info(
+                        f'{key}: requires_grad={t.requires_grad} grad_fn={t.grad_fn}'
+                    )
 
         if batch_nb % 200 == 0:
-            loss_summary = {k.split('/')[-1]: f'{v.item():.4f}' for k, v in loss_dict.items()}
-            logger.info(f'Epoch {self.current_epoch} batch {batch_nb}: {loss_summary}')
+            loss_summary = {
+                k.split('/')[-1]: f'{v.item():.4f}'
+                for k, v in loss_dict.items()
+            }
+            logger.info(
+                f'Epoch {self.current_epoch} batch {batch_nb}: {loss_summary}')
 
         return {'loss': loss}
 
-    def validation_step(self, batch, batch_nb, dataloader_nb=0, vis=False, save=True, mesh_save_dir=None):
+    def validation_step(self,
+                        batch,
+                        batch_nb,
+                        dataloader_nb=0,
+                        vis=False,
+                        save=True,
+                        mesh_save_dir=None):
         """Validation step computing MPJPE/PA-MPJPE metrics.
 
         Args:
@@ -185,10 +208,11 @@ class MHRTrainer(pl.LightningModule):
         img_w = batch['orig_shape'][:, 1]
 
         # Forward pass
-        pred, depth, _, _, part_segms = self(
-            images, bbox_center=bbox_center, bbox_scale=bbox_scale,
-            img_w=img_w, img_h=img_h
-        )
+        pred, depth, _, _, part_segms = self(images,
+                                             bbox_center=bbox_center,
+                                             bbox_scale=bbox_scale,
+                                             img_w=img_w,
+                                             img_h=img_h)
         pred['part_segms'] = part_segms
         pred['depth'] = depth
         pred_cam_vertices = pred['vertices']
@@ -210,9 +234,9 @@ class MHRTrainer(pl.LightningModule):
             gt_smpl_joints = torch.einsum(
                 'jv,bvd->bjd',
                 mhr_head._smpl_J_reg,
-                (w[:, 0].unsqueeze(0).unsqueeze(-1) * gv0
-                 + w[:, 1].unsqueeze(0).unsqueeze(-1) * gv1
-                 + w[:, 2].unsqueeze(0).unsqueeze(-1) * gv2),
+                (w[:, 0].unsqueeze(0).unsqueeze(-1) * gv0 +
+                 w[:, 1].unsqueeze(0).unsqueeze(-1) * gv1 +
+                 w[:, 2].unsqueeze(0).unsqueeze(-1) * gv2),
             )
             pred_keypoints_3d = pred_smpl[:, :24]
             gt_keypoints_3d = gt_smpl_joints[:, :24]
@@ -221,21 +245,26 @@ class MHRTrainer(pl.LightningModule):
             # MHR_TO_SMPL_JOINT_INDICES. Slicing the raw [:24] does NOT work —
             # the first 24 MHR joints are foot/twist procedurals, not body joints.
             idx = torch.as_tensor(
-                MHR_TO_SMPL_JOINT_INDICES, dtype=torch.long,
+                MHR_TO_SMPL_JOINT_INDICES,
+                dtype=torch.long,
                 device=pred['joints3d'].device,
             )
             pred_keypoints_3d = pred['joints3d'].index_select(1, idx)
-            gt_joints_mhr = batch.get('joints3d_mhr', batch.get('joints3d', None))
+            gt_joints_mhr = batch.get('joints3d_mhr',
+                                      batch.get('joints3d', None))
             if gt_joints_mhr is not None and gt_joints_mhr.ndim == 3 \
                     and gt_joints_mhr.shape[1] >= max(MHR_TO_SMPL_JOINT_INDICES) + 1:
-                gt_keypoints_3d = gt_joints_mhr.index_select(1, idx.to(gt_joints_mhr.device))
+                gt_keypoints_3d = gt_joints_mhr.index_select(
+                    1, idx.to(gt_joints_mhr.device))
             else:
                 # Last resort: original-dataset SMPL joints (already SMPL-ordered).
-                gt_keypoints_3d = batch.get('joints', None)[:, :NUM_MHR_SKELETON_JOINTS]
+                gt_keypoints_3d = batch.get('joints',
+                                            None)[:, :NUM_MHR_SKELETON_JOINTS]
 
         # Pelvis-center
         gt_pelvis = (gt_keypoints_3d[:, [1]] + gt_keypoints_3d[:, [2]]) / 2.0
-        pred_pelvis = (pred_keypoints_3d[:, [1]] + pred_keypoints_3d[:, [2]]) / 2.0
+        pred_pelvis = (pred_keypoints_3d[:, [1]] +
+                       pred_keypoints_3d[:, [2]]) / 2.0
         pred_keypoints_3d = pred_keypoints_3d - pred_pelvis
         pred_cam_vertices = pred_cam_vertices - pred_pelvis
         gt_keypoints_3d = gt_keypoints_3d - gt_pelvis
@@ -243,18 +272,19 @@ class MHRTrainer(pl.LightningModule):
             gt_cam_vertices = gt_cam_vertices - gt_pelvis
 
         # Absolute error (MPJPE)
-        error = torch.sqrt(((pred_keypoints_3d - gt_keypoints_3d) ** 2).sum(dim=-1)).cpu().numpy()
+        error = torch.sqrt(((pred_keypoints_3d -
+                             gt_keypoints_3d)**2).sum(dim=-1)).cpu().numpy()
         if gt_cam_vertices is not None:
-            error_verts = torch.sqrt(((pred_cam_vertices - gt_cam_vertices) ** 2).sum(dim=-1)).cpu().numpy()
+            error_verts = torch.sqrt(
+                ((pred_cam_vertices -
+                  gt_cam_vertices)**2).sum(dim=-1)).cpu().numpy()
         else:
             error_verts = np.zeros((batch_size, pred_cam_vertices.shape[1]))
 
         # Reconstruction error (PA-MPJPE)
-        r_error, _ = reconstruction_error(
-            pred_keypoints_3d.cpu().numpy(),
-            gt_keypoints_3d.cpu().numpy(),
-            reduction=None
-        )
+        r_error, _ = reconstruction_error(pred_keypoints_3d.cpu().numpy(),
+                                          gt_keypoints_3d.cpu().numpy(),
+                                          reduction=None)
         val_mpjpe = error.mean(-1)
         val_pampjpe = r_error.mean(-1)
         val_pve = error_verts.mean(-1)
@@ -284,9 +314,18 @@ class MHRTrainer(pl.LightningModule):
         if len(self.val_ds) > 1:
             for ds_idx, ds in enumerate(self.val_ds):
                 ds_name = ds.dataset
-                mpjpe = 1000 * np.hstack(np.array([val[ds_name + '_mpjpe'] for x in outputs for val in x])).mean()
-                pampjpe = 1000 * np.hstack(np.array([val[ds_name + '_pampjpe'] for x in outputs for val in x])).mean()
-                pve = 1000 * np.hstack(np.array([val[ds_name + '_pve'] for x in outputs for val in x])).mean()
+                mpjpe = 1000 * np.hstack(
+                    np.array([
+                        val[ds_name + '_mpjpe'] for x in outputs for val in x
+                    ])).mean()
+                pampjpe = 1000 * np.hstack(
+                    np.array([
+                        val[ds_name + '_pampjpe'] for x in outputs for val in x
+                    ])).mean()
+                pve = 1000 * np.hstack(
+                    np.array(
+                        [val[ds_name + '_pve'] for x in outputs
+                         for val in x])).mean()
 
                 if self.trainer.is_global_zero:
                     logger.info(ds_name + '_MPJPE: ' + str(mpjpe))
@@ -298,9 +337,13 @@ class MHRTrainer(pl.LightningModule):
         else:
             for ds_idx, ds in enumerate(self.val_ds):
                 ds_name = ds.dataset
-                mpjpe = 1000 * np.hstack(np.array([x[ds_name + '_mpjpe'] for x in outputs])).mean()
-                pampjpe = 1000 * np.hstack(np.array([x[ds_name + '_pampjpe'] for x in outputs])).mean()
-                pve = 1000 * np.hstack(np.array([x[ds_name + '_pve'] for x in outputs])).mean()
+                mpjpe = 1000 * np.hstack(
+                    np.array([x[ds_name + '_mpjpe'] for x in outputs])).mean()
+                pampjpe = 1000 * np.hstack(
+                    np.array([x[ds_name + '_pampjpe']
+                              for x in outputs])).mean()
+                pve = 1000 * np.hstack(
+                    np.array([x[ds_name + '_pve'] for x in outputs])).mean()
 
                 if self.trainer.is_global_zero:
                     logger.info(ds_name + '_MPJPE: ' + str(mpjpe))
@@ -311,8 +354,14 @@ class MHRTrainer(pl.LightningModule):
                     val_log[ds_name + '_val_pampjpe'] = pampjpe
                     val_log[ds_name + '_val_pve'] = pve
 
-        self.log('val_loss', val_log[self.val_ds[0].dataset + '_val_pampjpe'], logger=True, sync_dist=True)
-        self.log('val_loss_mpjpe', val_log[self.val_ds[0].dataset + '_val_mpjpe'], logger=True, sync_dist=True)
+        self.log('val_loss',
+                 val_log[self.val_ds[0].dataset + '_val_pampjpe'],
+                 logger=True,
+                 sync_dist=True)
+        self.log('val_loss_mpjpe',
+                 val_log[self.val_ds[0].dataset + '_val_mpjpe'],
+                 logger=True,
+                 sync_dist=True)
         for k, v in val_log.items():
             self.log(k, v, logger=True, sync_dist=True)
 
@@ -324,11 +373,9 @@ class MHRTrainer(pl.LightningModule):
 
     def configure_optimizers(self):
         """Configure optimizer for training."""
-        return torch.optim.Adam(
-            self.parameters(),
-            lr=self.hparams.OPTIMIZER.LR,
-            weight_decay=self.hparams.OPTIMIZER.WD
-        )
+        return torch.optim.Adam(self.parameters(),
+                                lr=self.hparams.OPTIMIZER.LR,
+                                weight_decay=self.hparams.OPTIMIZER.WD)
 
     def train_dataset(self):
         """Create training dataset."""
@@ -350,7 +397,8 @@ class MHRTrainer(pl.LightningModule):
             drop_last=True,
             # 'spawn' avoids "Cannot re-initialize CUDA in forked subprocess"
             # when on-the-fly SMPL→MHR conversion runs in workers
-            multiprocessing_context='spawn' if self.hparams.DATASET.NUM_WORKERS > 0 else None,
+            multiprocessing_context='spawn'
+            if self.hparams.DATASET.NUM_WORKERS > 0 else None,
         )
         return img_dataloader
 
@@ -365,8 +413,7 @@ class MHRTrainer(pl.LightningModule):
                     options=self.hparams.DATASET,
                     dataset=dataset_name,
                     is_train=False,
-                )
-            )
+                ))
         return val_datasets
 
     def val_dataloader(self):
@@ -380,9 +427,9 @@ class MHRTrainer(pl.LightningModule):
                     shuffle=False,
                     num_workers=self.hparams.DATASET.NUM_WORKERS,
                     drop_last=True,
-                    multiprocessing_context='spawn' if self.hparams.DATASET.NUM_WORKERS > 0 else None,
-                )
-            )
+                    multiprocessing_context='spawn'
+                    if self.hparams.DATASET.NUM_WORKERS > 0 else None,
+                ))
         return dataloaders
 
     def test_dataloader(self):
