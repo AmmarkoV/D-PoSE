@@ -170,12 +170,32 @@ class MHRHead(nn.Module):
                 img_w,
                 img_h,
                 normalize_joints2d=False):
+        # MAPPED FROM: SMPLXCamHead.forward (smplx_cam_head.py:L73)
+        #
+        # Original flow:
+        #   1. self.smplx(betas=shape, body_pose=rotmat[:,1:22], global_orient=rotmat[:,0])
+        #      → smpl_output.vertices [B, V, 3], smpl_output.joints [B, ~118, 3]
+        #   2. Split joints: body[:22], left_hand[22:37], right_hand[37:52], head[52:]
+        #   3. Convert camera params → cam_t via convert_pare_to_full_img_cam
+        #   4. perspective_projection each group separately
+        #   5. Return {vertices, joints3d (body only), joints2d (body only), pred_cam_t,
+        #              left_hand_3d, right_hand_3d, head_3d, left_hand_2d, right_hand_2d, head_2d, ...}
+        #
+        # New flow:
+        #   1. self.mhr_model(identity_coeffs, model_parameters=lbs_model_params, face_expr_coeffs)
+        #      → verts_cm [B, V, 3], skel_state [B, 127, 8]
+        #   2. Barycentric interpolation: MHR vertices → SMPL vertices → SMPL joints [B, 24, 3]
+        #   3. skel_state[:, :, :3] → MHR joints [B, 127, 3]
+        #   4. Convert camera params → cam_t via convert_pare_to_full_img_cam (identical)
+        #   5. perspective_projection both MHR joints (127) and SMPL joints (24)
+        #   6. Return {vertices, joints3d (127 MHR), joints3d_smpl (24 SMPL), joints2d (127),
+        #              joints2d_smpl (24), pred_cam_t, skel_state}
         """
         Forward pass through MHR model and camera projection.
 
         Args:
             identity_coeffs: [B, 45] identity blendshape coefficients
-            lbs_model_params: [B, ~144] LBS model parameters
+            lbs_model_params: [B, ~204] LBS model parameters
             face_expr_coeffs: [B, 72] face expression coefficients
             cam: [B, 3] camera parameters (scale, tx, ty)
             cam_intrinsics: [B, 3, 3] camera intrinsic matrix
@@ -188,10 +208,12 @@ class MHRHead(nn.Module):
         Returns:
             Dictionary with:
             - vertices: [B, V, 3] mesh vertices in meters
-            - joints3d: [B, J, 3] 3D joint positions in meters
-            - joints2d: [B, J, 2] projected 2D joint positions
+            - joints3d: [B, 127, 3] MHR skeleton 3D joints (cm→m)
+            - joints3d_smpl: [B, 24, 3] SMPL-ordered 3D joints (via barycentric interp)
+            - joints2d: [B, 127, 2] projected MHR 2D joints (viz only)
+            - joints2d_smpl: [B, 24, 2] projected SMPL 2D joints (used in loss)
             - pred_cam_t: [B, 3] camera translation
-            - skel_state: [B, J, 16] skeleton state (4x4 transforms)
+            - skel_state: [B, 127, 8] skeleton state (4x4 transforms)
         """
         batch_size = identity_coeffs.shape[0]
         device = identity_coeffs.device
@@ -205,6 +227,10 @@ class MHRHead(nn.Module):
 
         # Forward through MHR model
         # MHR outputs vertices in centimeters
+        # ← original: self.smplx(betas=shape, body_pose=rotmat[:,1:22], global_orient=rotmat[:,0], pose2rot=False)
+        #   SMPLX expects (betas, body_pose, global_orient) as separate args
+        # ← new: self.mhr_model(identity_coeffs, model_parameters=lbs_model_params, face_expr_coeffs, apply_correctives=True)
+        #   MHR expects (identity, lbs_model_params, face_expr_coeffs) as separate args
         verts_cm, skel_state = self.mhr_model(
             identity_coeffs=identity_coeffs,
             model_parameters=lbs_model_params,
@@ -215,6 +241,9 @@ class MHRHead(nn.Module):
         verts_m = verts_cm * self.cm_to_m
 
         # Compute SMPL joints from MHR vertices via barycentric interpolation (differentiable)
+        # ← original: smpl_output.joints from SMPLX forward — native SMPL joint output
+        # ← new: MHR mesh has different topology, need to project to SMPL vertex space
+        #   then apply SMPL J_regressor to get joints
         v0 = verts_m[:, self._smpl_tri_vids[:, 0]]  # [B, 6890, 3]
         v1 = verts_m[:, self._smpl_tri_vids[:, 1]]
         v2 = verts_m[:, self._smpl_tri_vids[:, 2]]
@@ -232,6 +261,7 @@ class MHRHead(nn.Module):
         joints3d_m = joints3d_cm * self.cm_to_m
 
         # Compute camera translation from PARE-style camera params
+        # ← identical to original SMPLXCamHead.forward (smplx_cam_head.py:L99-107)
         cam_t = convert_pare_to_full_img_cam(
             pare_cam=cam,
             bbox_height=bbox_scale * 200.,
@@ -246,6 +276,8 @@ class MHRHead(nn.Module):
         # This is kept for backward-compat and visualization but its joint ordering
         # is MHR-specific and does NOT match GT keypoint annotations in BEDLAM/3DPW,
         # so it cannot be used directly for the supervised 2D keypoint loss.
+        # ← original: perspective_projection(joints3d, ...) with SMPLX body joints (22)
+        # ← new: perspective_projection(joints3d_m, ...) with MHR skeleton joints (127)
         _rot = torch.eye(3, device=device).unsqueeze(0).expand(
             batch_size, -1, -1)
         joints2d = perspective_projection(
@@ -263,6 +295,8 @@ class MHRHead(nn.Module):
         # (0=pelvis, 1=L-hip, 2=R-hip, …, 23=R-wrist), which matches the GT
         # keypoint annotations stored in BEDLAM/3DPW batches. This makes
         # joints2d_smpl the correct tensor to use in the 2D keypoint loss.
+        # ← original: perspective_projection(joints_body, ...) with SMPLX body joints (22)
+        # ← new: perspective_projection(smpl_joints3d, ...) with 24 SMPL-ordered joints
         joints2d_smpl = perspective_projection(
             points=smpl_joints3d,
             rotation=_rot,
@@ -271,10 +305,14 @@ class MHRHead(nn.Module):
         )
 
         if normalize_joints2d:
+            # ← original: joints2d / (self.img_res / 2.)  [same]
             joints2d = joints2d / (self.img_res / 2.)
             joints2d_smpl = joints2d_smpl / (self.img_res / 2.)
 
         return {
+            # ← original: output = {vertices, joints3d (body 22), joints2d (body 22), pred_cam_t,
+            #                       left_hand_3d, right_hand_3d, head_3d, left_hand_2d, ...}
+            # ← new: simplified output with MHR-specific keys + SMPL-mapped fallbacks
             'vertices': verts_m,
             'joints3d': joints3d_m,
             'joints3d_smpl': smpl_joints3d,
