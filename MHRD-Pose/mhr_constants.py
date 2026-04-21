@@ -1,8 +1,20 @@
 """
 MHR-specific constants for D-Pose MHR port.
 
+MAPPED FROM: train/core/constants.py (SMPL/SMPLX constants)
+             train/core/config.py (loss weight defaults)
+
 This module defines all MHR-specific constants that replace SMPL constants
 in the training pipeline.
+
+File correspondence:
+  MHR constants              ←  train/core/constants.py SMPL constants
+  NUM_IDENTITY_BLENDSHAPES=45  ←  NUM_BETAS (SMPLX has 10/11 betas)
+  NUM_FACE_EXPRESSION_BLENDSHAPES=72  ←  (new — SMPLX has 10 expression dims, not 72)
+  NUM_LBS_MODEL_PARAMS=204     ←  NUM_JOINTS_SMPLX*6=132 (6D pose per joint)
+  NUM_MHR_SKELETON_JOINTS=24   ←  NUM_JOINTS_SMPL=24  (same count, different joints)
+  NUM_REGRESSOR_FEATURE_JOINTS=22  ←  NUM_JOINTS_SMPLX=22  (same count)
+  LOSS_WEIGHTS_MHR dict        ←  hparams.MODEL.LOSS_WEIGHT, BETA_LOSS_WEIGHT, etc.
 """
 
 import numpy as np
@@ -12,15 +24,21 @@ import numpy as np
 # =============================================================================
 
 # Number of identity blendshapes (body shape parameters)
+# ← original: shape/betas = 10 or 11 dims (NUM_BETAS / hparams.MODEL.BETA_LOSS_WEIGHT)
 NUM_IDENTITY_BLENDSHAPES = 45
 
 # Number of face expression blendshapes
+# ← original: SMPLX expression = 10 dims (not directly exposed as a loss weight,
+#   SMPLXCamHead didn't use expression — it was in the model but not predicted)
 NUM_FACE_EXPRESSION_BLENDSHAPES = 72
 
 # LBS (Linear Blend Skinning) model parameters
 # Structure: [tx(3), ry(3), rz(3), pose_angles(varying), scale(varying)] = 204 total
 # Verified by running mhr_model.pt (TorchScript) forward: only size 204 succeeds.
 # The MHR parameter_transform internally pads by identity(45) → 204+45=249 total.
+# ← original: pose = NUM_JOINTS_SMPLX*6 = 22*6 = 132 (6D rotation per joint)
+#   plus 3 for global_orient = 135, but Regressor outputs 6D per joint (22*6=132)
+#   plus global_orient = 135 total pose dims
 NUM_LBS_MODEL_PARAMS = 204
 
 # Total parameter transform size: 204 + 45 + 72 = 321
@@ -33,6 +51,7 @@ NUM_MHR_JOINTS_TOTAL = 127
 # Do NOT use this to index into the raw 127-joint MHR skel_state directly —
 # the first N MHR joints are foot/twist procedurals, not body joints. Use
 # MHR_TO_SMPL_JOINT_INDICES for that.
+# ← original: NUM_JOINTS_SMPL = 24  (same count, same anatomical ordering)
 NUM_MHR_SKELETON_JOINTS = 24
 
 # Architectural feature-tensor joint dim used by the regressor.
@@ -40,6 +59,7 @@ NUM_MHR_SKELETON_JOINTS = 24
 # pose-feature tensor produced by the upstream HRNet + attention head, which
 # was pretrained with a 22-joint convention (SMPL body minus 2 hands). Changing
 # this would break loading of the COCO-pretrained HRNet weights.
+# ← original: NUM_JOINTS_SMPLX = 22  (same number, coincidental — SMPLX body joints)
 NUM_REGRESSOR_FEATURE_JOINTS = 22
 
 # MHR coordinate system uses centimeters (vs SMPL's meters)

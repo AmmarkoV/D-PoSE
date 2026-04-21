@@ -326,6 +326,8 @@ class MHRHead(nn.Module):
 
 
 def perspective_projection(points, rotation, translation, cam_intrinsics):
+    # MAPPED FROM: smplx_cam_head.py:perspective_projection (L172)
+    # Identical to original — no changes.
     """
     Project 3D points to 2D using perspective projection.
 
@@ -363,6 +365,8 @@ def convert_pare_to_full_img_cam(pare_cam,
                                  img_h,
                                  focal_length,
                                  crop_res=224):
+    # MAPPED FROM: smplx_cam_head.py:convert_pare_to_full_img_cam (L183)
+    # Identical to original — no changes.
     """
     Convert PARE-style camera parameters to full image camera translation.
 
