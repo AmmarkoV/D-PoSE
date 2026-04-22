@@ -123,6 +123,12 @@ class MHRTrainer(pl.LightningModule):
             mesh_color=self.hparams.DATASET.MESH_COLOR,
         )
 
+        # Load pretrained weights from a checkpoint (e.g. original D-Pose SMPL ckpt)
+        # ← original: this was done in train.py via TRAINING.RESUME + manual loading
+        #   MHR: use TRAINING.PRETRAINED_LIT to point to a .ckpt file to load
+        #   compatible weights from before training starts.
+        self._load_pretrained_model()
+
     def forward(self, x, bbox_center, bbox_scale, img_w, img_h, fl=None):
         # MAPPED FROM: HMRTrainer.forward (hmr_trainer.py:57)
         """Forward pass through MHR-based HMR model."""
@@ -476,6 +482,66 @@ class MHRTrainer(pl.LightningModule):
         # MAPPED FROM: HMRTrainer.test_epoch_end (hmr_trainer.py:244)
         # PL v2.0: test_epoch_end(outputs) → on_test_epoch_end (no outputs arg)
         return self.on_validation_epoch_end()
+
+    def _load_pretrained_model(self):
+        """Load compatible weights from a pretrained checkpoint.
+
+        Strips the ``model.`` Lightning prefix, filters out smpl/smplx keys,
+        skips shape-mismatched parameters, and loads the rest with strict=False.
+
+        Config key: ``TRAINING.PRETRAINED_LIT`` — path to a .ckpt file.
+        Set to ``null`` (default) to skip.
+        """
+        pretrained_path = self.hparams.TRAINING.PRETRAINED_LIT
+        if not pretrained_path:
+            return
+
+        if not os.path.isfile(pretrained_path):
+            logger.warning(
+                f'PRETRAINED_LIT path {pretrained_path} does not exist. '
+                'Skipping pretrained weight loading.'
+            )
+            return
+
+        logger.info(f'Loading pretrained weights from {pretrained_path}')
+        ckpt = torch.load(pretrained_path, weights_only=False)
+        raw_sd = ckpt.get('state_dict', ckpt)
+        if not isinstance(raw_sd, dict):
+            logger.warning('Checkpoint has no "state_dict" key. Skipping.')
+            return
+
+        # --- strip Lightning prefix -----------------------------------------
+        sd = {}
+        for k, v in raw_sd.items():
+            if k.startswith('model.'):
+                k = k[len('model.'):]
+            sd[k] = v
+
+        # --- filter out smpl/smplx keys (not in MHR model) ------------------
+        model_keys = set(self.state_dict().keys())
+        filtered = {}
+        for k, v in sd.items():
+            if 'smpl' in k or 'smplx' in k:
+                continue
+            if k in model_keys:
+                filtered[k] = v
+
+        # --- skip shape mismatches ------------------------------------------
+        model_sd = self.state_dict()
+        loaded = 0
+        skipped = 0
+        for k, v in filtered.items():
+            if v.shape == model_sd[k].shape:
+                model_sd[k] = v
+                loaded += 1
+            else:
+                logger.warning(
+                    f'Size mismatch for "{k}": ckpt {tuple(v.shape)} vs model {tuple(model_sd[k].shape)} — skipping'
+                )
+                skipped += 1
+
+        self.load_state_dict(model_sd, strict=False)
+        logger.info(f'Pretrained weights loaded: {loaded} keys, {skipped} skipped')
 
     def configure_optimizers(self):
         # MAPPED FROM: HMRTrainer.configure_optimizers (hmr_trainer.py:247)
