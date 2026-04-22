@@ -139,6 +139,25 @@ class MHRTrainer(pl.LightningModule):
                           img_h=img_h,
                           fl=fl)
 
+    def on_train_epoch_start(self):
+        """Reconfigure optimizer when unfreezing pretrained layers."""
+        if self.current_epoch == self.hparams.TRAINING.UNFREEZE_EPOCH:
+            if self.hparams.TRAINING.FREEZE_PRETRAINED:
+                logger.info('=' * 60)
+                logger.info('UNFREEZE — switching optimizer to uniform LR for all layers')
+                logger.info('=' * 60)
+                base_lr = self.hparams.OPTIMIZER.LR
+                # Mutate the existing optimizer's param_groups in-place
+                # so Lightning's references stay valid. Adam state is
+                # keyed by tensor id, not index, so it transfers cleanly.
+                opt = self.optimizers()
+                if isinstance(opt, list):
+                    opt = opt[0]
+                for pg in opt.param_groups:
+                    pg['lr'] = base_lr
+                logger.info(f'  All params now use lr={base_lr:.1e}')
+                logger.info('=' * 60)
+
     def on_train_start(self):
         """Probe whether the MHR TorchScript model supports autograd."""
         logger.info("=" * 60)
@@ -596,14 +615,92 @@ class MHRTrainer(pl.LightningModule):
         logger.info(f'  Loaded: {loaded}/{len(model_sd)} keys ({loaded/len(model_sd)*100:.1f}%)')
         logger.info(f'  Skipped: {skipped} shape mismatches')
         logger.info(f'  Coverage: {loaded}/{len(model_sd)} params initialized from checkpoint')
+
+        # --- freeze pretrained layers (optional) ----------------------------
+        if self.hparams.TRAINING.FREEZE_PRETRAINED:
+            self._freeze_pretrained()
+
         logger.info('=' * 60)
+
+    def _freeze_pretrained(self):
+        """Freeze pretrained backbone, decoders, and attention.
+
+        Only the MHR-specific head layers (mhr_head) are kept trainable.
+        The pretrained parts (backbone, depth_decoder, segmentation_decoder,
+        attention, original head) were loaded from the D-PoSE checkpoint
+        and do not need gradients during early training.
+        """
+        frozen_count = 0
+        total_count = 0
+        for name, param in self.named_parameters():
+            total_count += 1
+            if name.startswith('model.model.'):
+                # Nested inside self.model (MHRHMR) — freeze if pretrained
+                bare = name[len('model.model.'):]
+                is_pretrained = any(bare.startswith(prefix) for prefix in
+                                    ('backbone.', 'depth_decoder.',
+                                     'segmentation_decoder.', 'attention.',
+                                     'head.'))
+                if is_pretrained:
+                    param.requires_grad = False
+                    frozen_count += 1
+                    continue
+            # Also freeze mhr_head sub-parts that come from the loaded
+            # TorchScript model (character_torch, face_expressions_model,
+            # pose_correctives_model) — these are non-trainable buffers.
+            # The trainable parts inside mhr_head are the MHR-specific
+            # linear layers that we want to train.
+
+        logger.info(f'  Frozen {frozen_count}/{total_count} parameters (pretrained layers)')
+        trainable = sum(p.numel() for p in self.parameters() if p.requires_grad)
+        total = sum(p.numel() for p in self.parameters())
+        logger.info(f'  Trainable: {trainable:,} / {total:,} params ({trainable/total*100:.1f}%)')
 
     def configure_optimizers(self):
         # MAPPED FROM: HMRTrainer.configure_optimizers (hmr_trainer.py:247)
-        """Configure optimizer for training."""
-        return torch.optim.Adam(self.parameters(),
-                                lr=self.hparams.OPTIMIZER.LR,
-                                weight_decay=self.hparams.OPTIMIZER.WD)
+        """Configure optimizer with separate LR groups for pretrained vs MHR layers.
+
+        Pretrained layers (backbone, decoders, attention, original head) get
+        a lower learning rate (base_lr / 10) since they were initialized from
+        the D-PoSE checkpoint.  MHR-specific layers (mhr_head) get the full
+        base_lr since they are trained from scratch.
+
+        After UNFREEZE_EPOCH all layers share the same LR.
+        """
+        base_lr = self.hparams.OPTIMIZER.LR
+        wd = self.hparams.OPTIMIZER.WD
+        frozen_lr = base_lr / 10.0
+
+        pretrained_prefixes = ('backbone.', 'depth_decoder.',
+                               'segmentation_decoder.', 'attention.', 'head.')
+
+        trainable_params = []
+        pretrained_params = []
+        for name, param in self.named_parameters():
+            if not param.requires_grad:
+                continue
+            bare = name[len('model.model.'):] if name.startswith('model.model.') else name
+            is_pretrained = any(bare.startswith(p) for p in pretrained_prefixes)
+            if is_pretrained and self.current_epoch < self.hparams.TRAINING.UNFREEZE_EPOCH:
+                pretrained_params.append(param)
+            else:
+                trainable_params.append(param)
+
+        # If all params are trainable (no freezing or after unfreeze), use single group
+        if not pretrained_params:
+            return torch.optim.Adam(trainable_params, lr=base_lr, weight_decay=wd)
+
+        groups = [
+            {'params': trainable_params, 'lr': base_lr},
+            {'params': pretrained_params, 'lr': frozen_lr},
+        ]
+        n_train = sum(p.numel() for g in groups for p in g['params']
+                       if g.get('lr') == base_lr)
+        n_pre = sum(p.numel() for g in groups for p in g['params']
+                     if g.get('lr') == frozen_lr)
+        logger.info(f'  Optimizer: {n_train:,} params @ lr={base_lr:.1e}, '
+                     f'{n_pre:,} params @ lr={frozen_lr:.1e}')
+        return torch.optim.Adam(groups, weight_decay=wd)
 
     def train_dataset(self):
         # MAPPED FROM: HMRTrainer.train_dataset (hmr_trainer.py:255)
