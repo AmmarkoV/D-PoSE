@@ -486,8 +486,11 @@ class MHRTrainer(pl.LightningModule):
     def _load_pretrained_model(self):
         """Load compatible weights from a pretrained checkpoint.
 
-        Strips the ``model.`` Lightning prefix, filters out smpl/smplx keys,
-        skips shape-mismatched parameters, and loads the rest with strict=False.
+        The checkpoint stores keys from the original HMR model (e.g.
+        ``model.backbone.conv1.weight``).  The MHR trainer is a
+        LightningModule whose ``self.state_dict()`` keys are prefixed with
+        ``model.`` (the nested HMR submodule), so we must align the two
+        key namespaces before matching.
 
         Config key: ``TRAINING.PRETRAINED_LIT`` — path to a .ckpt file.
         Set to ``null`` (default) to skip.
@@ -516,51 +519,83 @@ class MHRTrainer(pl.LightningModule):
         ckpt_size_mb = sum(v.numel() * v.element_size() for v in raw_sd.values()) / 1024 / 1024
         logger.info(f'  Checkpoint loaded: {len(raw_sd)} params, {ckpt_size_mb:.1f} MB')
 
-        # --- strip Lightning prefix -----------------------------------------
-        sd = {}
+        # --- MHR trainer state dict (LightningModule) -----------------------
+        # self.state_dict() keys look like:
+        #   model.backbone.conv1.weight
+        #   model.head.fc1.weight
+        #   mhr_head.mhr_model.xxx
+        #   loss_fn.xxx
+        # We only want to load into the nested ``self.model`` (MHRHMR).
+        full_sd = self.state_dict()
+        model_sd = self.model.state_dict()  # keys: backbone.conv1.weight, etc.
+
+        # Build a lookup: bare key -> full key so we can write back
+        bare_to_full = {}
+        for fk, fv in full_sd.items():
+            if fk.startswith('model.'):
+                bare = fk[len('model.'):]
+                bare_to_full[bare] = fk
+        logger.info(f'  MHR model has {len(model_sd)} parameters')
+
+        # --- align checkpoint keys to bare names ----------------------------
+        # The checkpoint may store keys as:
+        #   model.backbone.conv1.weight  → strip to backbone.conv1.weight
+        # or bare:
+        #   backbone.conv1.weight
+        ckpt_bare = {}
         stripped = 0
         for k, v in raw_sd.items():
+            # Strip 'model.' prefix if present
             if k.startswith('model.'):
-                k = k[len('model.'):]
+                bare = k[len('model.'):]
                 stripped += 1
-            sd[k] = v
-        logger.info(f'  Stripped "model." prefix from {stripped} keys')
+            else:
+                bare = k
+            ckpt_bare[bare] = v
+        logger.info(f'  Stripped "model." prefix from {stripped} checkpoint keys')
 
         # --- filter out smpl/smplx keys (not in MHR model) ------------------
-        model_keys = set(self.state_dict().keys())
-        total_in_ckpt = len(sd)
+        total_in_ckpt = len(ckpt_bare)
         filtered = {}
         removed_smpl = 0
-        for k, v in sd.items():
-            if 'smpl' in k or 'smplx' in k:
+        removed_no_match = 0
+        for bare_key, v in ckpt_bare.items():
+            if 'smpl' in bare_key or 'smplx' in bare_key:
                 removed_smpl += 1
                 continue
-            if k in model_keys:
-                filtered[k] = v
+            if bare_key not in model_sd:
+                removed_no_match += 1
+                continue
+            filtered[bare_key] = v
         logger.info(f'  Filtered out {removed_smpl} smpl/smplx keys')
-        logger.info(f'  {len(filtered)} / {total_in_ckpt} keys match model parameters')
+        logger.info(f'  Filtered out {removed_no_match} keys with no matching model parameter')
+        logger.info(f'  {len(filtered)} / {total_in_ckpt} keys from checkpoint match model')
 
-        # --- skip shape mismatches ------------------------------------------
-        model_sd = self.state_dict()
+        # --- skip shape mismatches, copy into full_sd -----------------------
         loaded = 0
         skipped = 0
         mismatched = []
-        for k, v in filtered.items():
-            if v.shape == model_sd[k].shape:
-                model_sd[k] = v
+        for bare_key, v in filtered.items():
+            full_key = bare_to_full.get(bare_key)
+            if full_key is None:
+                skipped += 1
+                continue
+            if v.shape == full_sd[full_key].shape:
+                full_sd[full_key] = v
                 loaded += 1
             else:
                 skipped += 1
-                mismatched.append((k, tuple(v.shape), tuple(model_sd[k].shape)))
+                mismatched.append((bare_key, tuple(v.shape), tuple(full_sd[full_key].shape)))
 
         for key, ckpt_shape, model_shape in mismatched:
             logger.warning(f'  Size mismatch "{key}": ckpt {ckpt_shape} vs model {model_shape} — skipping')
 
-        self.load_state_dict(model_sd, strict=False)
+        # Write back into the LightningModule
+        self.load_state_dict(full_sd, strict=False)
 
-        logger.info(f'  Loaded: {loaded}/{len(model_keys)} keys ({loaded/len(model_keys)*100:.1f}%)')
+        logger.info(f'  Loaded: {loaded}/{len(model_sd)} keys ({loaded/len(model_sd)*100:.1f}%)')
         logger.info(f'  Skipped: {skipped} shape mismatches')
-        logger.info(f'  Coverage: {loaded}/{len(model_keys)} params initialized from checkpoint')
+        logger.info(f'  Coverage: {loaded}/{len(model_sd)} params initialized from checkpoint')
         logger.info('=' * 60)
 
     def configure_optimizers(self):
