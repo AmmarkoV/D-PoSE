@@ -494,54 +494,74 @@ class MHRTrainer(pl.LightningModule):
         """
         pretrained_path = self.hparams.TRAINING.PRETRAINED_LIT
         if not pretrained_path:
+            logger.info('PRETRAINED_LIT is not set — skipping pretrained weight loading.')
             return
 
+        logger.info('=' * 60)
+        logger.info('PRETRAINED WEIGHT LOADING')
+        logger.info(f'  Checkpoint: {pretrained_path}')
         if not os.path.isfile(pretrained_path):
-            logger.warning(
-                f'PRETRAINED_LIT path {pretrained_path} does not exist. '
-                'Skipping pretrained weight loading.'
-            )
+            logger.warning(f'  File not found — skipping.')
+            logger.info('=' * 60)
             return
 
-        logger.info(f'Loading pretrained weights from {pretrained_path}')
+        logger.info('  Loading checkpoint...')
         ckpt = torch.load(pretrained_path, weights_only=False)
         raw_sd = ckpt.get('state_dict', ckpt)
         if not isinstance(raw_sd, dict):
-            logger.warning('Checkpoint has no "state_dict" key. Skipping.')
+            logger.warning('  Checkpoint has no "state_dict" key — skipping.')
+            logger.info('=' * 60)
             return
+
+        ckpt_size_mb = sum(v.numel() * v.element_size() for v in raw_sd.values()) / 1024 / 1024
+        logger.info(f'  Checkpoint loaded: {len(raw_sd)} params, {ckpt_size_mb:.1f} MB')
 
         # --- strip Lightning prefix -----------------------------------------
         sd = {}
+        stripped = 0
         for k, v in raw_sd.items():
             if k.startswith('model.'):
                 k = k[len('model.'):]
+                stripped += 1
             sd[k] = v
+        logger.info(f'  Stripped "model." prefix from {stripped} keys')
 
         # --- filter out smpl/smplx keys (not in MHR model) ------------------
         model_keys = set(self.state_dict().keys())
+        total_in_ckpt = len(sd)
         filtered = {}
+        removed_smpl = 0
         for k, v in sd.items():
             if 'smpl' in k or 'smplx' in k:
+                removed_smpl += 1
                 continue
             if k in model_keys:
                 filtered[k] = v
+        logger.info(f'  Filtered out {removed_smpl} smpl/smplx keys')
+        logger.info(f'  {len(filtered)} / {total_in_ckpt} keys match model parameters')
 
         # --- skip shape mismatches ------------------------------------------
         model_sd = self.state_dict()
         loaded = 0
         skipped = 0
+        mismatched = []
         for k, v in filtered.items():
             if v.shape == model_sd[k].shape:
                 model_sd[k] = v
                 loaded += 1
             else:
-                logger.warning(
-                    f'Size mismatch for "{k}": ckpt {tuple(v.shape)} vs model {tuple(model_sd[k].shape)} — skipping'
-                )
                 skipped += 1
+                mismatched.append((k, tuple(v.shape), tuple(model_sd[k].shape)))
+
+        for key, ckpt_shape, model_shape in mismatched:
+            logger.warning(f'  Size mismatch "{key}": ckpt {ckpt_shape} vs model {model_shape} — skipping')
 
         self.load_state_dict(model_sd, strict=False)
-        logger.info(f'Pretrained weights loaded: {loaded} keys, {skipped} skipped')
+
+        logger.info(f'  Loaded: {loaded}/{len(model_keys)} keys ({loaded/len(model_keys)*100:.1f}%)')
+        logger.info(f'  Skipped: {skipped} shape mismatches')
+        logger.info(f'  Coverage: {loaded}/{len(model_keys)} params initialized from checkpoint')
+        logger.info('=' * 60)
 
     def configure_optimizers(self):
         # MAPPED FROM: HMRTrainer.configure_optimizers (hmr_trainer.py:247)
