@@ -139,6 +139,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     logger.info(f'Input arguments: \n {args}')
+    torch.set_float32_matmul_precision('high')
     torch.cuda.empty_cache()
 
     # Update hparams with config file and from args
