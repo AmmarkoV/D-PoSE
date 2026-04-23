@@ -403,9 +403,14 @@ class MHRLoss(nn.Module):
         loss_regr_identity *= self.identity_loss_weight
         loss_regr_expr *= self.expr_loss_weight
 
-        # Camera loss (encourage reasonable camera parameters)
+        # Camera loss (encourage reasonable camera parameters).
+        # Clamp the output — when pred_cam is negative (random init),
+        # exp(-cam*10)^2 can reach 22000+ and dominate every other loss.
         pred_cam_clipped = torch.clamp(pred_cam[:, 0], min=-0.5, max=0.5)
-        loss_cam = ((torch.exp(-pred_cam_clipped * 10))**2).mean()
+        loss_cam = torch.clamp(
+            ((torch.exp(-pred_cam_clipped * 10))**2).mean(),
+            max=10.0,
+        )
 
         # Build loss dictionary
         loss_dict = {
