@@ -337,6 +337,44 @@ class MHRTrainer(pl.LightningModule):
 
         return {'loss': loss}
 
+    def on_after_backward(self):
+        """Inspect gradient norms after the first backward pass.
+
+        Runs once at epoch 0, batch 0 to verify that gradients actually
+        reach every major parameter group (backbone, head/regressor,
+        mhr_head buffers). If any group has zero gradients, the loss
+        component responsible for supervising it is broken or disconnected.
+
+        Note: global_step == 1 means we just finished E0 B0 (Lightning
+        increments global_step after each training step).
+        """
+        if self.current_epoch == 0 and self.global_step == 1:
+            logger.info("=" * 60)
+            logger.info("POST-BACKWARD GRADIENT NORM CHECK (E0 B0)")
+            groups = {'backbone': [], 'head (regressor)': [], 'mhr_head': [], 'other': []}
+            for name, param in self.named_parameters():
+                if param.grad is not None:
+                    norm = param.grad.data.norm().item()
+                    bare = name.replace('model.model.', '').replace('model.', '')
+                    if bare.startswith('backbone.'):
+                        groups['backbone'].append((bare, norm))
+                    elif bare.startswith('head.'):
+                        groups['head (regressor)'].append((bare, norm))
+                    elif bare.startswith('mhr_head.'):
+                        groups['mhr_head'].append((bare, norm))
+                    else:
+                        groups['other'].append((bare, norm))
+            for group, params in groups.items():
+                if params:
+                    total = sum(n for _, n in params)
+                    nonzero = sum(1 for _, n in params if n > 0)
+                    logger.info(f"  {group}: {nonzero}/{len(params)} params have non-zero grad, total norm={total:.6f}")
+                    for name, norm in sorted(params, key=lambda x: -x[1])[:3]:
+                        logger.info(f"    top: {name} norm={norm:.6f}")
+                else:
+                    logger.warning(f"  {group}: NO parameters found")
+            logger.info("=" * 60)
+
     def validation_step(self,
                         batch,
                         batch_nb,
