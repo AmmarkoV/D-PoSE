@@ -766,19 +766,26 @@ class MHRTrainer(pl.LightningModule):
         # MAPPED FROM: HMRTrainer.configure_optimizers (hmr_trainer.py:247)
         """Configure optimizer with separate LR groups for pretrained vs MHR layers.
 
-        Pretrained layers (backbone, decoders, attention, original head) get
-        a lower learning rate (base_lr / 10) since they were initialized from
-        the D-PoSE checkpoint.  MHR-specific layers (mhr_head) get the full
-        base_lr since they are trained from scratch.
+        Pretrained layers (backbone, decoders, attention) get a lower learning
+        rate (base_lr / 10) since they were initialized from the D-PoSE checkpoint.
+        MHR-specific layers (head / MHRRegressor, mhr_head) get the full base_lr
+        since they are trained from scratch.
 
         After UNFREEZE_EPOCH all layers share the same LR.
+
+        Note: 'head.' (MHRRegressor) is NOT in pretrained_prefixes — it is the
+        adaptation layer mapping pretrained features to MHR parameters and must
+        always be trainable. This matches _freeze_pretrained() which also excludes
+        'head.' from freezing.
         """
         base_lr = self.hparams.OPTIMIZER.LR
         wd = self.hparams.OPTIMIZER.WD
         frozen_lr = base_lr / 10.0
 
+        # Same set as _freeze_pretrained() — 'head.' excluded because MHRRegressor
+        # is the adaptation layer, not a pretrained component we want to protect.
         pretrained_prefixes = ('backbone.', 'depth_decoder.',
-                               'segmentation_decoder.', 'attention.', 'head.')
+                               'segmentation_decoder.', 'attention.')
 
         trainable_params = []
         pretrained_params = []
@@ -791,6 +798,15 @@ class MHRTrainer(pl.LightningModule):
                 pretrained_params.append(param)
             else:
                 trainable_params.append(param)
+
+        if not trainable_params:
+            # This should never happen if _freeze_pretrained() excludes 'head.',
+            # but guard against it to give a clear error instead of "empty param list".
+            raise RuntimeError(
+                "configure_optimizers: zero trainable parameters! "
+                "Check _freeze_pretrained() — MHRRegressor (model.head.*) "
+                "must NOT be frozen, and mhr_head TorchScript params are buffers "
+                "(not nn.Parameter).")
 
         # If all params are trainable (no freezing or after unfreeze), use single group
         if not pretrained_params:
