@@ -270,9 +270,23 @@ class MHRTrainer(pl.LightningModule):
         pred['depth'] = depth
         pred['part_segms'] = part_segms
 
-        # Compute GT SMPL joints from GT MHR vertices (same mapping as pred path)
-        # This gives differentiable 3D joint supervision since pred['joints3d_smpl']
-        # is differentiable and gt is a constant produced here under no_grad.
+        # Compute GT SMPL-ordered joints from GT MHR vertices.
+        #
+        # GT source: batch['vertices'] comes from dataset_wrapper.py, which converts
+        # SMPL→MHR via SMPLX forward + Conversion + MHR forward. These are MHR mesh
+        # vertices (18439 vertices) in meters, stored in camera space (transl=0).
+        #
+        # Pipeline: GT MHR vertices → barycentric interp → SMPL vertices (6890)
+        #           → SMPL J_regressor → SMPL joints (24 joints, SMPL ordering).
+        #
+        # This matches exactly how validation computes GT joints (validation_step
+        # lines 370-382), so training and validation use the same GT source.
+        # The barycentric mapping (mhr2smpl_mapping.npz) and J_regressor (SMPL_NEUTRAL.pkl)
+        # are buffers in mhr_head, shared between training and validation.
+        #
+        # torch.no_grad is essential — GT must be a constant, not part of the graph.
+        # Gradients flow only through pred['joints3d_smpl'], which is computed via
+        # the same barycentric mapping from pred['vertices'] (mhr_head.py:247-255).
         gt_verts = batch.get('vertices')
         mhr_head = getattr(self.model, 'mhr_head', None)
         if gt_verts is not None and mhr_head is not None and 'joints3d_smpl' in pred:

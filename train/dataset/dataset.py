@@ -206,22 +206,19 @@ class DatasetHMR(Dataset):
                 #rgb_img = occlude_with_pascal_objects(rgb_img_full, self.occluders)
             aug_comp = [CustomRandomOcclusion(occlusion_size_min=(50, 50), occlusion_size_max=(100, 100), p=1.0),
                         A.Downscale(scale_range=(0.5, 0.9), p=0.1),
-                        A.ImageCompression(20, 100, p=0.1),
+                        A.ImageCompression(quality_range=(20, 100), p=0.1),
                         A.RandomRain(blur_value=4, p=0.1),
                         A.MotionBlur(blur_limit=(3, 15),  p=0.2),
                         A.Blur(blur_limit=(3, 10), p=0.1),
-                        A.RandomSnow(brightness_coeff=1.5,
-                        snow_point_lower=0.2, snow_point_upper=0.4)]
-            aug_mod = [A.CLAHE((1, 11), (10, 10), p=0.2), A.ToGray(p=0.2),
+                        A.RandomSnow(snow_point_range=(0.2, 0.4), brightness_coeff=1.5, p=0.1)]
+            aug_mod = [A.CLAHE(clip_limit=(1, 11), tile_grid_size=(10, 10), p=0.2), A.ToGray(p=0.2),
                        A.RandomBrightnessContrast(p=0.2),
-                       A.MultiplicativeNoise(multiplier=[0.5, 1.5],
-                       elementwise=True, per_channel=True, p=0.2),
+                       A.MultiplicativeNoise(multiplier=(0.5, 1.5), p=0.2),
                        A.HueSaturationValue(hue_shift_limit=20,
-                       sat_shift_limit=30, val_shift_limit=20,
-                       always_apply=False, p=0.2),
+                       sat_shift_limit=30, val_shift_limit=20, p=0.2),
                        A.Posterize(p=0.1),
                        A.RandomGamma(gamma_limit=(80, 200), p=0.1),
-                       A.Equalize(mode='cv', p=0.1)]
+                       A.Equalize(p=0.1)]
             albumentation_aug = A.Compose([A.OneOf(aug_comp,
                                            p=self.options.ALB_PROB),
                                            A.OneOf(aug_mod,
@@ -244,22 +241,19 @@ class DatasetHMR(Dataset):
             #aug_occ = [CustomRandomOcclusion(occlusion_size_min=(30, 30), occlusion_size_max=(100, 100), p=self.options.OCCLUSION_PROB)]
             
             aug_comp = [A.Downscale(scale_range=(0.5, 0.9), p=0.1),
-                        A.ImageCompression(20, 100, p=0.1),
+                        A.ImageCompression(quality_range=(20, 100), p=0.1),
                         A.RandomRain(blur_value=4, p=0.1),
                         A.MotionBlur(blur_limit=(3, 15),  p=0.2),
                         A.Blur(blur_limit=(3, 10), p=0.1),
-                        A.RandomSnow(brightness_coeff=1.5,
-                        snow_point_lower=0.2, snow_point_upper=0.4)]
-            aug_mod = [A.CLAHE((1, 11), (10, 10), p=0.2), A.ToGray(p=0.2),
+                        A.RandomSnow(snow_point_range=(0.2, 0.4), brightness_coeff=1.5, p=0.1)]
+            aug_mod = [A.CLAHE(clip_limit=(1, 11), tile_grid_size=(10, 10), p=0.2), A.ToGray(p=0.2),
                        A.RandomBrightnessContrast(p=0.2),
-                       A.MultiplicativeNoise(multiplier=[0.5, 1.5],
-                       elementwise=True, per_channel=True, p=0.2),
+                       A.MultiplicativeNoise(multiplier=(0.5, 1.5), p=0.2),
                        A.HueSaturationValue(hue_shift_limit=20,
-                       sat_shift_limit=30, val_shift_limit=20,
-                       always_apply=False, p=0.2),
+                       sat_shift_limit=30, val_shift_limit=20, p=0.2),
                        A.Posterize(p=0.1),
                        A.RandomGamma(gamma_limit=(80, 200), p=0.1),
-                       A.Equalize(mode='cv', p=0.1)]
+                       A.Equalize(p=0.1)]
             albumentation_aug = A.Compose([A.OneOf(aug_comp,
                                             p=self.options.ALB_PROB),
                                         A.OneOf(aug_mod,
