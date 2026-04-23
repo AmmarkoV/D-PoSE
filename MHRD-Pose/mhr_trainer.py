@@ -782,6 +782,7 @@ class MHRTrainer(pl.LightningModule):
             # when on-the-fly SMPL→MHR conversion runs in workers
             multiprocessing_context='spawn'
             if self.hparams.DATASET.NUM_WORKERS > 0 else None,
+            persistent_workers=self.hparams.DATASET.NUM_WORKERS > 0,
         )
         return img_dataloader
 
@@ -815,6 +816,7 @@ class MHRTrainer(pl.LightningModule):
                     drop_last=True,
                     multiprocessing_context='spawn'
                     if self.hparams.DATASET.NUM_WORKERS > 0 else None,
+                    persistent_workers=self.hparams.DATASET.NUM_WORKERS > 0,
                 ))
         return dataloaders
 
