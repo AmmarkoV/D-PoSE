@@ -159,7 +159,16 @@ class MHRTrainer(pl.LightningModule):
                 logger.info('=' * 60)
 
     def on_train_start(self):
-        """Probe whether the MHR TorchScript model supports autograd."""
+        """Probe whether the MHR TorchScript model supports autograd.
+
+        Checks two output paths:
+        1. vertices — used by loss_shape and loss_keypoints_3d (via barycentric
+           interpolation into SMPL joints). This is the primary gradient path.
+        2. skel_state — used for joints3d extraction (mhr_head.py:259-261).
+           joints3d (127-joint raw MHR ordering) is NOT used in any loss —
+           only joints3d_smpl (24-joint barycentric from vertices) is.
+           If skel_state is non-differentiable, it has NO impact on training.
+        """
         logger.info("=" * 60)
         logger.info("MHR GRAD PROBE — checking if MHR model is differentiable")
         mhr_head = getattr(self.model, 'mhr_head', None)
@@ -176,21 +185,45 @@ class MHRTrainer(pl.LightningModule):
         expr     = torch.zeros(B, NUM_FACE_EXPRESSION_BLENDSHAPES, device=device, requires_grad=True)
 
         try:
-            verts_cm, _ = mhr_head.mhr_model(
-                identity, model_parameters=pose, face_expr_coeffs=expr,
+            verts_cm, skel_state = mhr_head.mhr_model(
+                identity_coeffs=identity,
+                model_parameters=pose,
+                face_expr_coeffs=expr,
                 apply_correctives=True,
             )
             verts_m = verts_cm * 0.01
             logger.info(f"  verts_m: shape={tuple(verts_m.shape)}"
                         f"  requires_grad={verts_m.requires_grad}"
                         f"  grad_fn={type(verts_m.grad_fn).__name__ if verts_m.grad_fn else None}")
+
+            # Check skel_state differentiability (joints3d extraction path).
+            # joints3d = skel_state[:, :, :3] is used for visualization and
+            # as a fallback in loss_keypoints_3d, but the primary path uses
+            # joints3d_smpl (barycentric from vertices) which IS differentiable.
+            logger.info(f"  skel_state: shape={tuple(skel_state.shape)}"
+                        f"  requires_grad={skel_state.requires_grad}"
+                        f"  grad_fn={type(skel_state.grad_fn).__name__ if skel_state.grad_fn else None}")
+            joints3d_probe = skel_state[:, :, :3] * 0.01
+            logger.info(f"  joints3d (skel_state[:,:3]*cm_to_m): shape={tuple(joints3d_probe.shape)}"
+                        f"  requires_grad={joints3d_probe.requires_grad}"
+                        f"  grad_fn={type(joints3d_probe.grad_fn).__name__ if joints3d_probe.grad_fn else None}")
+
             if verts_m.requires_grad:
                 verts_m.sum().backward()
                 logger.info(f"  identity.grad: {'OK — grads reach identity_coeffs' if identity.grad is not None else 'NONE — dead gradient path!'}")
                 logger.info(f"  pose.grad:     {'OK — grads reach lbs_model_params' if pose.grad is not None else 'NONE — dead gradient path!'}")
+                logger.info(f"  expr.grad:     {'OK — grads reach face_expr_coeffs' if expr.grad is not None else 'NONE — dead gradient path!'}")
             else:
                 logger.warning("  verts_m.requires_grad=False — MHR model does NOT support autograd")
                 logger.warning("  loss_keypoints_3d and loss_shape provide ZERO gradient to the network")
+
+            if not skel_state.requires_grad:
+                logger.info("  skel_state is NOT differentiable — this is OK because"
+                            " joints3d (127-joint raw MHR ordering) is not used in"
+                            " any loss. The primary path uses joints3d_smpl computed"
+                            " via barycentric interpolation of vertices, which IS"
+                            " differentiable (see verts_m check above).")
+
         except Exception as e:
             logger.error(f"  MHR grad probe raised: {e}")
         logger.info("=" * 60)

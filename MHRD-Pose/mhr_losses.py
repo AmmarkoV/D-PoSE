@@ -348,11 +348,28 @@ class MHRLoss(nn.Module):
             criterion=criterion,
         )
 
-        # Compute 3D keypoint loss using differentiable SMPL joints when available
+        # Compute 3D keypoint loss.
+        # Two paths — primary uses barycentric-interpolated SMPL joints,
+        # fallback uses raw MHR skel_state joints indexed into SMPL order.
+        #
+        # Pelvis centering is applied in BOTH paths because:
+        # (a) Validation computes PA-MPJPE on pelvis-centered joints
+        #     (mhr_trainer.py validation_step lines 406-414). Without matching
+        #     centering here, training optimizes absolute positions while
+        #     validation measures relative pose — the model can "cheat" by
+        #     translating the whole mesh to minimize absolute error without
+        #     actually improving pose.
+        # (b) The original D-Pose loss also pelvis-centers implicitly via its
+        #     camera translation parameter, but the MHR head's cam_t conversion
+        #     (convert_pare_to_full_img_cam) doesn't guarantee the same effect.
         gt_joints_smpl = gt.get('joints3d')
         pred_joints_smpl = pred.get('joints3d_smpl')
         if pred_joints_smpl is not None and gt_joints_smpl is not None:
-            # Pelvis-center both (average of left hip [1] and right hip [2])
+            # Primary path: both pred and GT are in SMPL 24-joint ordering via
+            # barycentric interpolation (mhr2smpl_mapping + SMPL J_regressor).
+            # GT joints3d is computed in mhr_trainer.training_step (lines 246-257)
+            # under torch.no_grad, so gradients flow only through pred_joints_smpl.
+            # Pelvis-center both (average of left hip [1] and right hip [2]).
             pred_pel = (pred_joints_smpl[:, [1]] +
                         pred_joints_smpl[:, [2]]) / 2.0
             gt_pel = (gt_joints_smpl[:, [1]] + gt_joints_smpl[:, [2]]) / 2.0
@@ -376,9 +393,14 @@ class MHRLoss(nn.Module):
                 gt_mapped = gt_joints.index_select(1, idx.to(gt_joints.device))
             else:
                 gt_mapped = gt_joints[:, :self.num_joints]
+            # Pelvis-center mapped joints (same convention: average of
+            # SMPL-order left hip [1] and right hip [2]).
+            pred_pel_fallback = (pred_mapped[:, [1]] +
+                                 pred_mapped[:, [2]]) / 2.0
+            gt_pel_fallback = (gt_mapped[:, [1]] + gt_mapped[:, [2]]) / 2.0
             loss_keypoints_3d = keypoint_3d_loss(
-                pred_mapped,
-                gt_mapped,
+                pred_mapped - pred_pel_fallback,
+                gt_mapped - gt_pel_fallback,
                 criterion=criterion,
             )
         else:
