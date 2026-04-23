@@ -32,6 +32,8 @@ class CustomRandomOcclusion(ImageOnlyTransform):
             np.random.randint(self.occlusion_size_min[0], self.occlusion_size_max[0]),
             np.random.randint(self.occlusion_size_min[1], self.occlusion_size_max[1])
         )
+        if height <= occlusion_size[0] or width <= occlusion_size[1]:
+            return img
         top = np.random.randint(0, height - occlusion_size[0])
         left = np.random.randint(0, width - occlusion_size[1])
 
