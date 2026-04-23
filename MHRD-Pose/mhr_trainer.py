@@ -722,31 +722,40 @@ class MHRTrainer(pl.LightningModule):
     def _freeze_pretrained(self):
         """Freeze pretrained backbone, decoders, and attention.
 
-        Only the MHR-specific head layers (mhr_head) are kept trainable.
-        The pretrained parts (backbone, depth_decoder, segmentation_decoder,
-        attention, original head) were loaded from the D-PoSE checkpoint
-        and do not need gradients during early training.
+        Keeps the MHRRegressor (self.model.head) and MHRHead (self.model.mhr_head)
+        trainable. The regressor is the adaptation layer — it maps pretrained
+        features to MHR output parameters. Freezing it would make training
+        impossible because no parameters could learn.
+
+        Frozen: backbone, depth_decoder, segmentation_decoder, attention
+        Trainable: head (MHRRegressor), mhr_head (MHRHead + TorchScript MHR model)
         """
+        # Only these pretrained components are frozen — 'head.' (MHRRegressor) is
+        # intentionally excluded because it is the adaptation layer that maps
+        # pretrained visual features to MHR parameters. The original SMPLXCamHead
+        # was a thin wrapper around SMPLX (no trainable params), but MHRRegressor
+        # is a learned MLP that replaces it entirely.
+        pretrained_prefixes = ('backbone.', 'depth_decoder.',
+                               'segmentation_decoder.', 'attention.')
+
         frozen_count = 0
         total_count = 0
         for name, param in self.named_parameters():
             total_count += 1
             if name.startswith('model.'):
-                # Nested inside self.model (MHRHMR) — freeze if pretrained
+                # Strip 'model.' prefix (LightningModule names self.model.* as
+                # 'model.xxx' in named_parameters()). MHRHMR internals like
+                # self.backbone become 'model.backbone.conv1.weight'.
                 bare = name[len('model.'):]
-                is_pretrained = any(bare.startswith(prefix) for prefix in
-                                    ('backbone.', 'depth_decoder.',
-                                     'segmentation_decoder.', 'attention.',
-                                     'head.'))
+                is_pretrained = any(bare.startswith(prefix)
+                                    for prefix in pretrained_prefixes)
                 if is_pretrained:
                     param.requires_grad = False
                     frozen_count += 1
                     continue
-            # Also freeze mhr_head sub-parts that come from the loaded
-            # TorchScript model (character_torch, face_expressions_model,
-            # pose_correctives_model) — these are non-trainable buffers.
-            # The trainable parts inside mhr_head are the MHR-specific
-            # linear layers that we want to train.
+            # mhr_head contains only buffers (faces, _smpl_tri_vids, etc.) and
+            # the TorchScript MHR model — no nn.Parameter to freeze.
+            # The regressor (model.head.*) is intentionally left trainable.
 
         logger.info(f'  Frozen {frozen_count}/{total_count} parameters (pretrained layers)')
         trainable = sum(p.numel() for p in self.parameters() if p.requires_grad)
