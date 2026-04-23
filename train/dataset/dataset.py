@@ -44,9 +44,9 @@ class CustomRandomOcclusion(ImageOnlyTransform):
         # Ensure img_min and img_max are suitable for the data type of the image
         if img.dtype == np.uint8:
             # For uint8 images, values are already in the [0, 255] range
-            noise = np.random.randint(img_min, img_max + 1, 
-                                      (occlusion_size[0], occlusion_size[1], img.shape[2]), 
-                                      dtype=np.uint8)
+            # Use plain int to avoid uint8 overflow when img_max=255 (255+1 wraps to 0 in uint8)
+            noise = np.random.randint(int(img_min), int(img_max) + 1,
+                                      (occlusion_size[0], occlusion_size[1], img.shape[2])).astype(np.uint8)
         else:
             # For floating-point images, scale random values to [img_min, img_max]
             noise = np.random.uniform(img_min, img_max, 
@@ -504,9 +504,8 @@ class DatasetHMR(Dataset):
                                       img_res=self.options.IMG_RES)
                 item['depth'] = torch.zeros((1, self.options.DEPTH_MAP_SIZE, self.options.DEPTH_MAP_SIZE )).float()
         except Exception as E:
-            import traceback
             logger.info(f'@{imgname} from {self.dataset}')
-            traceback.print_exc()
+            print(E)
             img = np.zeros((3, self.options.IMG_RES, self.options.IMG_RES), dtype=np.float32)
             item['depth'] = torch.zeros((1, self.options.DEPTH_MAP_SIZE, self.options.DEPTH_MAP_SIZE)).float()
 
