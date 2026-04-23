@@ -205,7 +205,7 @@ class DatasetHMR(Dataset):
             #if np.random.uniform() <= self.occlusion_prob:
                 #rgb_img = occlude_with_pascal_objects(rgb_img_full, self.occluders)
             aug_comp = [CustomRandomOcclusion(occlusion_size_min=(50, 50), occlusion_size_max=(100, 100), p=1.0),
-                        A.Downscale(0.5, 0.9, interpolation=0, p=0.1),
+                        A.Downscale(scale_range=(0.5, 0.9), p=0.1),
                         A.ImageCompression(20, 100, p=0.1),
                         A.RandomRain(blur_value=4, p=0.1),
                         A.MotionBlur(blur_limit=(3, 15),  p=0.2),
@@ -243,7 +243,7 @@ class DatasetHMR(Dataset):
         if self.is_train and self.options.ALB and self.use_augmentation:
             #aug_occ = [CustomRandomOcclusion(occlusion_size_min=(30, 30), occlusion_size_max=(100, 100), p=self.options.OCCLUSION_PROB)]
             
-            aug_comp = [A.Downscale(0.5, 0.9, interpolation=0, p=0.1),
+            aug_comp = [A.Downscale(scale_range=(0.5, 0.9), p=0.1),
                         A.ImageCompression(20, 100, p=0.1),
                         A.RandomRain(blur_value=4, p=0.1),
                         A.MotionBlur(blur_limit=(3, 15),  p=0.2),
