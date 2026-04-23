@@ -546,17 +546,11 @@ class MHRTrainer(pl.LightningModule):
             for ds_idx, ds in enumerate(self.val_ds):
                 ds_name = ds.dataset
                 mpjpe = 1000 * np.hstack(
-                    np.array([
-                        val[ds_name + '_mpjpe'] for x in outputs for val in x
-                    ])).mean()
+                    np.array([x[ds_name + '_mpjpe'] for x in outputs])).mean()
                 pampjpe = 1000 * np.hstack(
-                    np.array([
-                        val[ds_name + '_pampjpe'] for x in outputs for val in x
-                    ])).mean()
+                    np.array([x[ds_name + '_pampjpe'] for x in outputs])).mean()
                 pve = 1000 * np.hstack(
-                    np.array(
-                        [val[ds_name + '_pve'] for x in outputs
-                         for val in x])).mean()
+                    np.array([x[ds_name + '_pve'] for x in outputs])).mean()
 
                 if self.trainer.is_global_zero:
                     logger.info(ds_name + '_MPJPE: ' + str(mpjpe))
@@ -737,9 +731,9 @@ class MHRTrainer(pl.LightningModule):
         total_count = 0
         for name, param in self.named_parameters():
             total_count += 1
-            if name.startswith('model.model.'):
+            if name.startswith('model.'):
                 # Nested inside self.model (MHRHMR) — freeze if pretrained
-                bare = name[len('model.model.'):]
+                bare = name[len('model.'):]
                 is_pretrained = any(bare.startswith(prefix) for prefix in
                                     ('backbone.', 'depth_decoder.',
                                      'segmentation_decoder.', 'attention.',
@@ -782,7 +776,7 @@ class MHRTrainer(pl.LightningModule):
         for name, param in self.named_parameters():
             if not param.requires_grad:
                 continue
-            bare = name[len('model.model.'):] if name.startswith('model.model.') else name
+            bare = name[len('model.'):] if name.startswith('model.') else name
             is_pretrained = any(bare.startswith(p) for p in pretrained_prefixes)
             if is_pretrained and self.current_epoch < self.hparams.TRAINING.UNFREEZE_EPOCH:
                 pretrained_params.append(param)

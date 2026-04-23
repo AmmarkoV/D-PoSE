@@ -144,7 +144,7 @@ class MHRRegressor(nn.Module):
 
     def __init__(self,
                  input_dim=32,
-                 hidden_dim=1024,
+                 hidden_dim=32,
                  num_layer=1,
                  use_depth=False):
         # MAPPED FROM: Regressor.__init__ (refit_regressor.py:L60)
@@ -184,7 +184,7 @@ class MHRRegressor(nn.Module):
         init_identity = torch.zeros(NUM_IDENTITY_BLENDSHAPES).unsqueeze(0)
         init_expr = torch.zeros(NUM_FACE_EXPRESSION_BLENDSHAPES).unsqueeze(0)
         init_pose = torch.zeros(NUM_LBS_MODEL_PARAMS).unsqueeze(0)
-        init_cam = torch.tensor([[1.0, 0.0, 0.0]])
+        init_cam = torch.tensor([[0.9, 0.0, 0.0]])
 
         self.register_buffer('init_identity', init_identity)
         self.register_buffer('init_expr', init_expr)
