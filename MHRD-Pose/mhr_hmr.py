@@ -283,7 +283,7 @@ class MHRHMR(nn.Module):
             #   self.one_euro_shape = OneEuroFilter(...) for pred_shape (betas)
             # ← new: pred_shape replaced by pred_identity + pred_expr (two separate filters)
             #   self.one_euro_identity, self.one_euro_expr, NO self.one_euro_shape
-            if self.one_euro_cam is None and self.use_one_euro:
+            if not self.training and self.one_euro_cam is None and self.use_one_euro:
                 self.one_euro_cam = OneEuroFilter(
                     np.zeros_like(mhr_output['pred_cam'][0].detach().cpu()),
                     mhr_output['pred_cam'][0].detach().cpu().numpy(),
@@ -300,8 +300,13 @@ class MHRHMR(nn.Module):
                     mhr_output['pred_identity'][0].detach().cpu().numpy(),
                     min_cutoff=self.min_cutoff,
                     beta=self.beta)
+                self.one_euro_expr = OneEuroFilter(
+                    np.zeros_like(mhr_output['pred_expr'][0].detach().cpu()),
+                    mhr_output['pred_expr'][0].detach().cpu().numpy(),
+                    min_cutoff=self.min_cutoff,
+                    beta=self.beta)
 
-            if self.use_one_euro:
+            if self.use_one_euro and not self.training:
                 self.t += 1
                 t_pose = np.ones_like(
                     mhr_output['pred_pose'][0].detach().cpu()) * self.t
@@ -310,6 +315,8 @@ class MHRHMR(nn.Module):
                 t_cam = np.ones_like(
                     mhr_output['pred_cam'][0].detach().cpu()) * self.t
 
+                t_expr = np.ones_like(
+                    mhr_output['pred_expr'][0].detach().cpu()) * self.t
                 mhr_output['pred_cam'] = torch.tensor(
                     self.one_euro_cam(
                         t_cam,
@@ -317,14 +324,15 @@ class MHRHMR(nn.Module):
                 mhr_output['pred_pose'] = torch.tensor(
                     self.one_euro_pose(
                         t_pose,
-                        mhr_output['pred_pose'].detach().cpu().numpy())).cuda(
-                        )
+                        mhr_output['pred_pose'].detach().cpu().numpy())).cuda()
                 mhr_output['pred_identity'] = torch.tensor(
                     self.one_euro_identity(
                         t_identity, mhr_output['pred_identity'].detach().cpu().
                         numpy())).cuda()
-                # ← original also filtered: hmr_output['pred_shape']
-                #   New: no pred_shape; pred_identity and pred_expr are filtered above
+                mhr_output['pred_expr'] = torch.tensor(
+                    self.one_euro_expr(
+                        t_expr,
+                        mhr_output['pred_expr'].detach().cpu().numpy())).cuda()
 
             # Forward through MHR head to get vertices and joints
             # ← original (hmr.py:L134-144): self.smpl(rotmat=hmr_output['pred_pose'], shape=hmr_output['pred_shape'], cam=hmr_output['pred_cam'], ...)

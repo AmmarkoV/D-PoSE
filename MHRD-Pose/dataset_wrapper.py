@@ -105,7 +105,7 @@ class DatasetHMR(OriginalDatasetHMR):
     MHR Parameters Returned:
     - identity_coeffs: [B, 45] identity blendshape coefficients
     - face_expr_coeffs: [B, 72] face expression coefficients
-    - lbs_model_params: [B, 144] LBS model parameters
+    - lbs_model_params: [B, 204] LBS model parameters
     - vertices: [B, V, 3] MHR mesh vertices (in meters)
     - joints3d: [B, J, 3] MHR skeleton joints (in meters)
 
