@@ -34,6 +34,7 @@ from loguru import logger
 
 # Import original dataset
 from train.dataset.dataset import DatasetHMR as OriginalDatasetHMR
+from train.core.config import DATASET_FILES
 
 _SKEL_STATE_FORMAT_LOGGED = False
 
@@ -140,6 +141,8 @@ class DatasetHMR(OriginalDatasetHMR):
 
         self.dataset_name = dataset
         self.is_train = is_train
+        # Stored so __setstate__ can reopen self.data after spawn-pickling.
+        self._data_path = DATASET_FILES[is_train][dataset]
 
         # MHR conversion cache directory
         self.mhr_cache_dir = Path('data/mhr_cache')
@@ -160,6 +163,17 @@ class DatasetHMR(OriginalDatasetHMR):
                 f"No cache found for {dataset}, will convert on-the-fly")
         else:
             logger.info(f"Loaded cached MHR parameters for {dataset}")
+
+    def __getstate__(self):
+        # NpzFile holds an open BufferedReader that cannot be pickled by spawn.
+        # Drop it; __setstate__ reopens it in the worker.
+        state = self.__dict__.copy()
+        state['data'] = None
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        self.data = np.load(self._data_path, allow_pickle=True)
 
     def _try_load_cache(self):
         # NEW METHOD — no original in train/dataset/dataset.py
