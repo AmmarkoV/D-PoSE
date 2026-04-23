@@ -265,6 +265,24 @@ class MHRTrainer(pl.LightningModule):
             self.log(k, v, logger=True, sync_dist=True)
 
         if batch_nb == 0 and self.current_epoch == 0:
+            logger.info("=" * 60)
+            logger.info("E0 B0 LOSS DEBUG")
+            logger.info(f"  Config loss_weight={self.loss_fn.loss_weight}"
+                        f"  joint={self.loss_fn.joint_loss_weight}"
+                        f"  shape={self.loss_fn.shape_loss_weight}"
+                        f"  kp2d={self.loss_fn.keypoint_loss_weight_2d}"
+                        f"  pose={self.loss_fn.pose_loss_weight}"
+                        f"  identity={self.loss_fn.identity_loss_weight}"
+                        f"  expr={self.loss_fn.expr_loss_weight}")
+            for k, v in loss_dict.items():
+                logger.info(f"  {k} = {v.item():.6f}")
+            logger.info("=" * 60)
+
+            # Backward to inspect gradients, then let Lightning run
+            # its own backward. We do this before Lightning's backward
+            # so we can inspect; Lightning will zero grads first anyway.
+            # Actually — calling .backward() twice would accumulate.
+            # Instead, just check pred tensor grad status pre-backward.
             logger.info("--- E0 B0 PRED TENSOR GRAD CHECK ---")
             for key in ('joints3d', 'joints3d_smpl', 'vertices'):
                 t = pred.get(key)
