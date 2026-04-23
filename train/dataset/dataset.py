@@ -504,8 +504,9 @@ class DatasetHMR(Dataset):
                                       img_res=self.options.IMG_RES)
                 item['depth'] = torch.zeros((1, self.options.DEPTH_MAP_SIZE, self.options.DEPTH_MAP_SIZE )).float()
         except Exception as E:
+            import traceback
             logger.info(f'@{imgname} from {self.dataset}')
-            print(E)
+            traceback.print_exc()
             img = np.zeros((3, self.options.IMG_RES, self.options.IMG_RES), dtype=np.float32)
             item['depth'] = torch.zeros((1, self.options.DEPTH_MAP_SIZE, self.options.DEPTH_MAP_SIZE)).float()
 
