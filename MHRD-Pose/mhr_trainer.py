@@ -62,6 +62,11 @@ class MHRTrainer(pl.LightningModule):
         # Load MHR model
         # ← original: self.smplx = smplx.SMPLX(...) and self.smpl = smplx.SMPL(...)
         #   SMPLX/SMPL model instances replaced by loading MHR model from checkpoint
+        from config import check_file
+        check_file(MHR_MODEL_PT, 'MHR TorchScript model (mhr_model.pt)',
+                   context={'path in config': MHR_MODEL_PT,
+                            'cwd': os.getcwd()},
+                   fatal=True)
         self.mhr_model = torch.load(MHR_MODEL_PT,
                                     map_location='cpu',
                                     weights_only=False)
@@ -107,9 +112,52 @@ class MHRTrainer(pl.LightningModule):
             os.path.abspath(__file__)))
         if _proj_root not in _sys.path:
             _sys.path.insert(0, _proj_root)
+
+        # ── Startup path validation ──────────────────────────────────────────
+        # Log the path-resolution context once at init so that "file present
+        # on host but not found in container" failures are immediately
+        # diagnosable from the training log without re-running anything.
+        #
+        # How paths are resolved:
+        #   CWD-relative  (e.g. MHR_MODEL_PT = 'assets/mhr_model.pt'):
+        #     resolved against os.getcwd() at the time of the torch.load call.
+        #     Inside Docker this is /home/user/workspace — correct if the repo
+        #     root is mounted there.
+        #   proj_root-relative (e.g. J_regressor_h36m.npy, mhr_portable_dump):
+        #     resolved against _proj_root derived from __file__.  Inside Docker,
+        #     __file__ = /home/user/workspace/MHRD-Pose/mhr_trainer.py
+        #     → _proj_root = /home/user/workspace — correct.
+        #   If either CWD or __file__ resolves differently (e.g. symlinks,
+        #   unusual launch path), every path below may silently be wrong.
+        logger.info("=" * 60)
+        logger.info("STARTUP PATH RESOLUTION")
+        logger.info(f"  __file__    : {os.path.abspath(__file__)}")
+        logger.info(f"  _proj_root  : {_proj_root}")
+        logger.info(f"  cwd         : {os.getcwd()}")
+        logger.info(f"  Docker mount: host $REPOSITORY → /home/user/workspace")
+        _ctx = {'__file__': os.path.abspath(__file__),
+                '_proj_root': _proj_root,
+                'cwd': os.getcwd()}
+        _files_to_check = {
+            'MHR model'        : MHR_MODEL_PT,
+            'pretrained ckpt'  : self.hparams.TRAINING.PRETRAINED_LIT or '(not set)',
+            'mhr_portable_dump': os.path.join(_proj_root, 'mhr_portable_dump', 'mhr_dump_lod1.pt'),
+            'J_regressor_h36m' : os.path.join(_proj_root, 'data', 'utils', 'J_regressor_h36m.npy'),
+        }
+        for _label, _p in _files_to_check.items():
+            if _p and _p != '(not set)':
+                _exists = os.path.isfile(os.path.abspath(_p))
+                logger.info(f"  {'OK' if _exists else 'MISSING':<7} {_label}: {os.path.abspath(_p)}")
+            else:
+                logger.info(f"  SKIPPED {_label}: {_p}")
+        logger.info("=" * 60)
+        # ── End path validation ──────────────────────────────────────────────
+
         from load_mhr_portable import load_portable
-        _portable = load_portable(
-            os.path.join(_proj_root, 'mhr_portable_dump', 'mhr_dump_lod1.pt'))
+        _dump_path = os.path.join(_proj_root, 'mhr_portable_dump', 'mhr_dump_lod1.pt')
+        check_file(_dump_path, 'MHR portable dump (faces / mesh metadata)',
+                   context=_ctx, fatal=True)
+        _portable = load_portable(_dump_path)
         _faces = _portable['interesting']['character.mesh.faces']
         if isinstance(_faces, torch.Tensor):
             self.faces = _faces.cpu().numpy()
@@ -143,8 +191,11 @@ class MHRTrainer(pl.LightningModule):
         # be applied here for an apples-to-apples comparison with the paper.
         # When the file is absent, validation falls back to SMPL-24 protocol
         # (different joint set and pelvis, numbers NOT comparable to the paper).
-        _h36m_path = os.path.join(_proj_root, 'data/utils/J_regressor_h36m.npy')
-        if os.path.isfile(_h36m_path):
+        _h36m_path = os.path.join(_proj_root, 'data', 'utils', 'J_regressor_h36m.npy')
+        if check_file(_h36m_path,
+                      'H36M joint regressor (J_regressor_h36m.npy, shape [17,6890])',
+                      context=_ctx,
+                      fatal=False):
             self.register_buffer(
                 'J_regressor_h36m',
                 torch.from_numpy(np.load(_h36m_path)).float())
@@ -154,11 +205,8 @@ class MHRTrainer(pl.LightningModule):
         else:
             self.J_regressor_h36m = None
             logger.warning(
-                f'J_regressor_h36m.npy not found at {_h36m_path}. '
-                'Validation will use SMPL-24 protocol — MPJPE/PA-MPJPE '
-                'will NOT be directly comparable to the D-Pose paper. '
-                'Provide data/utils/J_regressor_h36m.npy (shape [17, 6890]) '
-                'to enable paper-comparable H36M-14 metrics.')
+                'Validation will fall back to SMPL-24 protocol — '
+                'MPJPE/PA-MPJPE will NOT be comparable to the D-Pose paper.')
 
     def forward(self, x, bbox_center, bbox_scale, img_w, img_h, fl=None):
         # MAPPED FROM: HMRTrainer.forward (hmr_trainer.py:57)
@@ -963,6 +1011,10 @@ class MHRTrainer(pl.LightningModule):
             logger.info('=' * 60)
             return
 
+        from config import check_file as _cf
+        _cf(pretrained_path, 'pretrained Lightning checkpoint (PRETRAINED_LIT)',
+            context={'PRETRAINED_LIT': pretrained_path, 'cwd': os.getcwd()},
+            fatal=True)
         logger.info('  Loading checkpoint...')
         ckpt = torch.load(pretrained_path, weights_only=False)
         raw_sd = ckpt.get('state_dict', ckpt)

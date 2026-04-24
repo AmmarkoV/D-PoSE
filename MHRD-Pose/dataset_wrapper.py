@@ -144,12 +144,36 @@ class DatasetHMR(OriginalDatasetHMR):
         # Stored so __setstate__ can reopen self.data after spawn-pickling.
         self._data_path = DATASET_FILES[is_train][dataset]
 
+        # Validate the dataset .npz path before attempting to load it.
+        # DATASET_FILES entries are CWD-relative strings (e.g.
+        # 'data/training_labels/all_npz_12_training/agora-bfh.npz').
+        # Inside Docker the CWD is /home/user/workspace, so these resolve
+        # correctly when the repo root is mounted there.  A mismatch between
+        # the working directory at dataset init and the Docker mount point
+        # (e.g. launching from a subdirectory) will make every dataset load
+        # fail with a cryptic FileNotFoundError from numpy.
+        import sys as _sys, os as _os
+        _mhrd_dir = _os.path.dirname(_os.path.abspath(__file__))
+        _proj_root_ds = _os.path.dirname(_mhrd_dir)
+        from config import check_file as _cf
+        _cf(self._data_path,
+            f'dataset NPZ ({dataset}, is_train={is_train})',
+            context={'cwd': _os.getcwd(),
+                     '__file__': _os.path.abspath(__file__),
+                     '_proj_root': _proj_root_ds,
+                     'DATASET_FILES key': self._data_path},
+            fatal=True)
+
         # MHR conversion cache directory
         self.mhr_cache_dir = Path('data/mhr_cache')
         self.mhr_cache_dir.mkdir(parents=True, exist_ok=True)
 
         # Cache file for this dataset
         self.cache_file = self.mhr_cache_dir / f"{dataset}_mhr_params.npz"
+        logger.info(
+            f"MHR cache path for '{dataset}': "
+            f"{_os.path.abspath(self.cache_file)}"
+            f"  ({'exists' if self.cache_file.exists() else 'will be created'})")
 
         # Try to load cached MHR parameters
         self.mhr_params_cached = self._try_load_cache()
