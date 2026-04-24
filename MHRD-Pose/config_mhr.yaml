@@ -33,7 +33,7 @@ DATASET:
   USE_SEGM: True
   USE_BG_DEPTH: False
   SUPERVISE_DEPTH: False
-  SUPERVISE_SEGM: True
+  SUPERVISE_SEGM: False  # requires neural_renderer + MHR-compatible part segmentation; not yet implemented
   ADVERSARIAL: False
   UPSAMPLE_HRNET: False
   DEPTH_ONLY: False
@@ -57,8 +57,8 @@ TRAINING:
   PRETRAINED_CKPT: 'coco'
   PRETRAINED_LIT: 'data/ckpt/paper_arxiv.ckpt'
   FREEZE_PRETRAINED: True
-  UNFREEZE_EPOCH: 90
-  MAX_EPOCHS: 100
+  UNFREEZE_EPOCH: 133  # ~90% of 148 epochs, matching original 90/100 ratio
+  MAX_EPOCHS: 148  # 148 * 1355 steps/epoch ≈ 200k steps
   LOG_SAVE_INTERVAL: 50
   LOG_FREQ_TB_IMAGES: 500
   CHECK_VAL_EVERY_N_EPOCH: 1

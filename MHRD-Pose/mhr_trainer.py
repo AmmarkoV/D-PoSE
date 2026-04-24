@@ -129,6 +129,37 @@ class MHRTrainer(pl.LightningModule):
         #   compatible weights from before training starts.
         self._load_pretrained_model()
 
+        # H36M J_regressor for paper-comparable 14-joint validation metrics.
+        #
+        # Original (hmr_trainer.py:45-48):
+        #   self.register_buffer('J_regressor',
+        #       torch.from_numpy(np.load(config.JOINT_REGRESSOR_H36M)).float())
+        # The original D-Pose paper reports MPJPE/PA-MPJPE on 14 H36M joints,
+        # computed by applying this [17, 6890] regressor to SMPL vertices and
+        # then selecting the 14-joint subset via H36M_TO_J14.
+        #
+        # MHR validation uses SMPL vertices derived from barycentric interpolation
+        # of MHR mesh vertices (mhr2smpl_mapping.npz), so the same regressor can
+        # be applied here for an apples-to-apples comparison with the paper.
+        # When the file is absent, validation falls back to SMPL-24 protocol
+        # (different joint set and pelvis, numbers NOT comparable to the paper).
+        _h36m_path = os.path.join(_proj_root, 'data/utils/J_regressor_h36m.npy')
+        if os.path.isfile(_h36m_path):
+            self.register_buffer(
+                'J_regressor_h36m',
+                torch.from_numpy(np.load(_h36m_path)).float())
+            logger.info(
+                f'Loaded H36M J_regressor from {_h36m_path} — '
+                'validation will use H36M-14 protocol (paper-comparable).')
+        else:
+            self.J_regressor_h36m = None
+            logger.warning(
+                f'J_regressor_h36m.npy not found at {_h36m_path}. '
+                'Validation will use SMPL-24 protocol — MPJPE/PA-MPJPE '
+                'will NOT be directly comparable to the D-Pose paper. '
+                'Provide data/utils/J_regressor_h36m.npy (shape [17, 6890]) '
+                'to enable paper-comparable H36M-14 metrics.')
+
     def forward(self, x, bbox_center, bbox_scale, img_w, img_h, fl=None):
         # MAPPED FROM: HMRTrainer.forward (hmr_trainer.py:57)
         """Forward pass through MHR-based HMR model."""
@@ -141,7 +172,26 @@ class MHRTrainer(pl.LightningModule):
 
     def on_train_epoch_start(self):
         """Reconfigure optimizer when unfreezing pretrained layers."""
+        # Log the learning rate for every optimizer param group at epoch start.
+        # With differential LR (head at base_lr, backbone at base_lr/10), two
+        # groups exist before unfreeze and one after.  Logging both makes the
+        # LR jump at UNFREEZE_EPOCH visible on TensorBoard without guessing from
+        # epoch numbers alone.  LR is epoch-level (doesn't change within epoch),
+        # so on_epoch=True / on_step=False is the right granularity.
+        _opt = self.optimizers()
+        if isinstance(_opt, list):
+            _opt = _opt[0]
+        if _opt is not None:
+            for _i, _pg in enumerate(_opt.param_groups):
+                self.log(f'train/lr_group_{_i}', float(_pg['lr']),
+                         on_step=False, on_epoch=True, logger=True, sync_dist=True)
+
         if self.current_epoch == self.hparams.TRAINING.UNFREEZE_EPOCH:
+            # Log a 1.0 spike so the unfreeze boundary is visible on every
+            # TensorBoard scalar chart without needing to compute it mentally
+            # from epoch numbers.  All other epochs log 0.0 implicitly (absent).
+            self.log('train/unfreeze_event', 1.0,
+                     on_step=False, on_epoch=True, logger=True, sync_dist=True)
             if self.hparams.TRAINING.FREEZE_PRETRAINED:
                 logger.info('=' * 60)
                 logger.info('UNFREEZE — switching optimizer to uniform LR for all layers')
@@ -270,6 +320,58 @@ class MHRTrainer(pl.LightningModule):
         pred['depth'] = depth
         pred['part_segms'] = part_segms
 
+        # --- Prediction statistics (logged every step) ---
+        # Three common silent failure modes that MPJPE won't reveal until
+        # several epochs in:
+        #
+        #   cam_scale_min < 0  →  at least one sample in the batch has an
+        #     inverted camera (person "behind" the image plane). The
+        #     exp(-cam*10)^2 camera loss clamps to 10.0 but does not
+        #     prevent negative scale from persisting if the pose gradient
+        #     is stronger.  Visible here before it shows up as high MPJPE.
+        #
+        #   cam_scale_std → 0  →  camera branch collapsed; all samples in
+        #     the batch receive the same scale regardless of bounding-box
+        #     size.  Typically caused by the loss_cam term dominating and
+        #     driving all predictions toward the mean.
+        #
+        #   pose_std → 0  →  regressor mode collapse: all samples get
+        #     nearly identical lbs_model_params.  Happens when the pose-
+        #     regression loss overwhelms the image-feature signal early in
+        #     training (before unfreeze), pushing params toward the GT mean
+        #     without the backbone providing discriminative features.
+        #
+        #   identity_std → 0  →  shape branch not learning.  Common when
+        #     identity_coeffs are all-zero in the precomputed dataset
+        #     (preconvert_to_mhr.py failed to extract blendshape coeffs)
+        #     because criterion(zeros, zeros) = 0 gives no gradient.
+        with torch.no_grad():
+            _cam = pred['pred_cam'][:, 0]  # scale only; tx/ty are unbounded
+            self.log('pred/cam_scale_mean', _cam.mean(),
+                     on_step=True, on_epoch=False, logger=True, sync_dist=True)
+            self.log('pred/cam_scale_std',  _cam.std(),
+                     on_step=True, on_epoch=False, logger=True, sync_dist=True)
+            self.log('pred/cam_scale_min',  _cam.min(),
+                     on_step=True, on_epoch=False, logger=True, sync_dist=True)
+            self.log('pred/pose_std', pred['pred_pose'].std(),
+                     on_step=True, on_epoch=False, logger=True, sync_dist=True)
+            self.log('pred/identity_std', pred['pred_identity'].std(),
+                     on_step=True, on_epoch=False, logger=True, sync_dist=True)
+
+        # --- GT key availability (logged every step) ---
+        # mhr_losses.py fetches every GT tensor with .get(), so a missing key
+        # silently returns 0 loss and that parameter branch receives no
+        # gradient.  A dataset caching bug, wrong file path, or failed
+        # precomputation would manifest here as a 1.0 spike rather than as
+        # a mysteriously stalled loss component.
+        # Log as binary 0/1 per step; TensorBoard's smoothing makes even
+        # occasional missing batches visible as a non-zero mean.
+        for _gt_key in ('identity_coeffs', 'face_expr_coeffs',
+                        'lbs_model_params', 'vertices'):
+            self.log(f'data/gt_{_gt_key}_missing',
+                     float(batch.get(_gt_key) is None),
+                     on_step=True, on_epoch=False, logger=True, sync_dist=True)
+
         # Compute GT SMPL-ordered joints from GT MHR vertices.
         #
         # GT source: batch['vertices'] comes from dataset_wrapper.py, which converts
@@ -306,10 +408,54 @@ class MHRTrainer(pl.LightningModule):
         # Compute loss
         loss, loss_dict = self.loss_fn(pred=pred, gt=batch)
 
+        # --- NaN/Inf guard ---
+        # If the MHR forward produces degenerate geometry (e.g. extreme
+        # lbs_model_params) or a loss weight is misconfigured, loss can go
+        # NaN/Inf.  Lightning detects NaN and skips the optimizer step, but
+        # it does NOT zero the gradients first — stale .grad values from the
+        # previous step persist, and Adam's running-mean buffers accumulate
+        # NaN permanently, making recovery impossible without resetting state.
+        # Returning a zero-loss tensor (with a live grad_fn via pred_cam) lets
+        # the backward run cleanly (grad = 0 everywhere) and leaves optimizer
+        # state intact.  We also log which component caused the NaN so the
+        # root cause is immediately traceable in TensorBoard.
+        if torch.isnan(loss) or torch.isinf(loss):
+            logger.error(
+                f'NaN/Inf loss at epoch {self.current_epoch} batch {batch_nb}! '
+                f'Skipping backward to protect optimizer state.')
+            for _k, _v in loss_dict.items():
+                if torch.isnan(_v) or torch.isinf(_v):
+                    logger.error(f'  BAD  {_k} = {_v.item()}')
+                else:
+                    logger.error(f'  ok   {_k} = {_v.item():.6f}')
+            self.log('train/nan_loss_event', 1.0,
+                     on_step=True, on_epoch=False, logger=True, sync_dist=True)
+            # Zero via pred_cam.mean() keeps a live grad_fn so Lightning's
+            # backward hook does not raise "element 0 of tensors does not
+            # require grad" while still producing zero updates.
+            return {'loss': pred['pred_cam'].mean() * 0.0}
+
         # Log losses
         self.log('train_loss', loss, logger=True, sync_dist=True)
         for k, v in loss_dict.items():
             self.log(k, v, logger=True, sync_dist=True)
+
+        # --- Loss contribution ratios ---
+        # Absolute loss values are hard to interpret as training progresses
+        # because the overall scale changes as components converge.  Ratios
+        # show the *relative weight* of each term, making imbalances obvious:
+        # e.g. loss_shape at 80% of total means vertex reconstruction is
+        # dominating and pose/keypoint signals are being drowned out.
+        # Summing all ratios (excluding 'loss/loss') should give ~1.0 modulo
+        # the loss_weight scaling applied inside MHRLoss.forward.
+        with torch.no_grad():
+            _total_abs = loss.abs().clamp(min=1e-8)
+            for _k, _v in loss_dict.items():
+                if _k != 'loss/loss':
+                    self.log(f'ratio/{_k.split("/")[-1]}',
+                             _v.abs() / _total_abs,
+                             on_step=True, on_epoch=False,
+                             logger=True, sync_dist=True)
 
         if batch_nb == 0 and self.current_epoch == 0:
             logger.info("=" * 60)
@@ -341,6 +487,63 @@ class MHRTrainer(pl.LightningModule):
                     )
             logger.info("--- END E0 B0 CHECK ---")
 
+            # --- Barycentric mapping sanity (E0 B0, real data) ---
+            # PLAN.md §Critical Finding: the 3D keypoint loss uses GT SMPL joints
+            # derived from GT MHR vertices via barycentric interpolation
+            # (mhr2smpl_mapping.npz → SMPL J_regressor).  If that mapping is
+            # inaccurate, the model trains toward systematically wrong joint
+            # targets and PA-MPJPE will plateau at a floor set by the mapping
+            # error, not by the model's pose estimation capability.
+            #
+            # This check runs once at E0 B0 on the first real training batch,
+            # where batch['joints3d'] has just been populated by the GT computation
+            # block above.  It checks three proxies for mapping quality:
+            #   1. Position range: joints should be within ±1.5 m of the pelvis
+            #      for any plausible human pose.  Larger values mean the mapping
+            #      returned positions in centimetres (forgot * cm_to_m) or the
+            #      barycentric interpolation landed on completely wrong triangles.
+            #   2. Mean dist from pelvis: should be 0.3–0.6 m for adult body joints.
+            #      Values < 0.05 m mean joints are all at the origin (mapping
+            #      returned zeros, or GT vertices were T-pose with no displacement).
+            #   3. Per-joint spread: std across joints per sample reflects
+            #      whether the mapping is producing a full-body spread or a degenerate
+            #      configuration where multiple joints collapse to the same point.
+            _gt_j3d = batch.get('joints3d')
+            if (_gt_j3d is not None and _gt_j3d.ndim == 3
+                    and _gt_j3d.shape[-1] == 3 and _gt_j3d.shape[1] >= 3):
+                with torch.no_grad():
+                    _pel = (_gt_j3d[:, [1]] + _gt_j3d[:, [2]]) / 2.0
+                    _centered = _gt_j3d - _pel
+                    _dist = _centered.norm(dim=-1)  # [B, J] dist from pelvis
+                logger.info("--- BARYCENTRIC MAPPING SANITY (E0 B0) ---")
+                logger.info(f"  GT joints3d: shape={tuple(_gt_j3d.shape)}")
+                logger.info(f"  Position range : [{_gt_j3d.min():.4f}, "
+                            f"{_gt_j3d.max():.4f}] m")
+                logger.info(f"  Mean dist/pelvis: {_dist.mean():.4f} m "
+                            f"(expected 0.30–0.60 m)")
+                logger.info(f"  Max  dist/pelvis: {_dist.max():.4f} m "
+                            f"(expected < 1.50 m)")
+                logger.info(f"  Per-joint std   : "
+                            f"{_centered.std(dim=1).mean():.4f} m")
+                if _dist.max() > 2.0:
+                    logger.warning(
+                        "  *** WARN: joints > 2 m from pelvis — check "
+                        "mhr2smpl_mapping.npz units (should be metres, not cm)")
+                elif _dist.mean() < 0.05:
+                    logger.warning(
+                        "  *** WARN: joints near origin — barycentric "
+                        "mapping may have returned zeros or GT vertices "
+                        "are all T-pose (no shape/pose displacement)")
+                else:
+                    logger.info("  Mapping looks reasonable.")
+                logger.info("--- END BARYCENTRIC SANITY ---")
+            else:
+                logger.warning(
+                    "  Barycentric sanity skipped: batch['joints3d'] not "
+                    "available at E0 B0 — GT joint computation may have "
+                    "failed (check mhr_head._smpl_tri_vids / _smpl_baryc "
+                    "buffers and GT vertices in batch)")
+
         if batch_nb % 200 == 0:
             loss_summary = {
                 k.split('/')[-1]: f'{v.item():.4f}'
@@ -352,42 +555,73 @@ class MHRTrainer(pl.LightningModule):
         return {'loss': loss}
 
     def on_after_backward(self):
-        """Inspect gradient norms after the first backward pass.
+        """Inspect gradient norms after each backward pass, periodically.
 
-        Runs once at epoch 0, batch 0 to verify that gradients actually
-        reach every major parameter group (backbone, head/regressor,
-        mhr_head buffers). If any group has zero gradients, the loss
-        component responsible for supervising it is broken or disconnected.
+        Runs at E0 B0 (initial connectivity check) and every 500 steps
+        thereafter (ongoing health monitoring).
 
-        Note: global_step == 1 means we just finished E0 B0 (Lightning
-        increments global_step after each training step).
+        Why periodic gradient norms are useful beyond the initial check:
+          - After UNFREEZE_EPOCH, the backbone starts receiving gradients for
+            the first time.  A sudden spike in backbone grad norm (> 10× its
+            first value) means the learning rate is too high for the unfrozen
+            layers and features will be destroyed.  A drop to near-zero means
+            the backbone is not contributing to the loss.
+          - If head (regressor) grad norm shrinks to near-zero after many epochs,
+            the MHRRegressor has saturated — lbs_model_params converged to a
+            fixed point and the model stopped learning pose.  This is expected
+            near the end of training but premature early on.
+          - mhr_head should always show zero grad: its TorchScript MHR model
+            parameters are not nn.Parameters (they are TorchScript internals),
+            and the barycentric buffers (_smpl_tri_vids, _smpl_baryc, etc.) are
+            registered buffers with requires_grad=False.  Any non-zero value here
+            means the model structure changed unexpectedly.
+
+        Note: global_step == 1 during the first batch's on_after_backward
+        because Lightning increments global_step after the optimizer step,
+        which runs after on_after_backward.  So step 0 → global_step=1 here.
         """
-        if self.current_epoch == 0 and self.global_step == 1:
-            logger.info("=" * 60)
-            logger.info("POST-BACKWARD GRADIENT NORM CHECK (E0 B0)")
-            groups = {'backbone': [], 'head (regressor)': [], 'mhr_head': [], 'other': []}
-            for name, param in self.named_parameters():
-                if param.grad is not None:
-                    norm = param.grad.data.norm().item()
-                    bare = name.replace('model.model.', '').replace('model.', '')
-                    if bare.startswith('backbone.'):
-                        groups['backbone'].append((bare, norm))
-                    elif bare.startswith('head.'):
-                        groups['head (regressor)'].append((bare, norm))
-                    elif bare.startswith('mhr_head.'):
-                        groups['mhr_head'].append((bare, norm))
-                    else:
-                        groups['other'].append((bare, norm))
-            for group, params in groups.items():
-                if params:
-                    total = sum(n for _, n in params)
-                    nonzero = sum(1 for _, n in params if n > 0)
-                    logger.info(f"  {group}: {nonzero}/{len(params)} params have non-zero grad, total norm={total:.6f}")
-                    for name, norm in sorted(params, key=lambda x: -x[1])[:3]:
-                        logger.info(f"    top: {name} norm={norm:.6f}")
+        _is_first    = (self.current_epoch == 0 and self.global_step == 1)
+        # Fire every 500 optimizer steps after the initial check.
+        # 500 steps ≈ every ~22 min at 1355 steps/epoch; enough resolution
+        # to catch a gradient collapse without flooding the log.
+        _is_periodic = (self.global_step % 500 == 0 and self.global_step > 1)
+        if not (_is_first or _is_periodic):
+            return
+
+        _label = 'E0 B0' if _is_first else f'step {self.global_step}'
+        logger.info("=" * 60)
+        logger.info(f"POST-BACKWARD GRADIENT NORM CHECK ({_label})")
+        groups = {'backbone': [], 'head (regressor)': [], 'mhr_head': [], 'other': []}
+        for name, param in self.named_parameters():
+            if param.grad is not None:
+                norm = param.grad.data.norm().item()
+                bare = name.replace('model.model.', '').replace('model.', '')
+                if bare.startswith('backbone.'):
+                    groups['backbone'].append((bare, norm))
+                elif bare.startswith('head.'):
+                    groups['head (regressor)'].append((bare, norm))
+                elif bare.startswith('mhr_head.'):
+                    groups['mhr_head'].append((bare, norm))
                 else:
-                    logger.warning(f"  {group}: NO parameters found")
-            logger.info("=" * 60)
+                    groups['other'].append((bare, norm))
+        for group, params in groups.items():
+            if params:
+                total = sum(n for _, n in params)
+                nonzero = sum(1 for _, n in params if n > 0)
+                logger.info(f"  {group}: {nonzero}/{len(params)} params "
+                            f"have non-zero grad, total norm={total:.6f}")
+                for name, norm in sorted(params, key=lambda x: -x[1])[:3]:
+                    logger.info(f"    top: {name} norm={norm:.6f}")
+                # Log total group norm to TensorBoard for trend analysis.
+                # Key sanitised: spaces→underscore, parens removed.
+                _tb_key = (group.replace(' ', '_')
+                                .replace('(', '').replace(')', ''))
+                self.log(f'grad_norm/{_tb_key}', total,
+                         on_step=True, on_epoch=False,
+                         logger=True, sync_dist=True)
+            else:
+                logger.warning(f"  {group}: NO parameters found")
+        logger.info("=" * 60)
 
     def validation_step(self,
                         batch,
@@ -447,26 +681,102 @@ class MHRTrainer(pl.LightningModule):
         # Get ground truth joints and vertices
         gt_cam_vertices = batch.get('vertices', None)
 
-        # Use SMPL joints derived from MHR vertices — same metric as training.
-        # Compute GT SMPL joints from GT MHR vertices with the same mhr2smpl mapping.
+        # Validation joint protocol.
+        #
+        # Two outer paths:
+        #   Primary: barycentric MHR→SMPL vertices are available (normal case).
+        #            Sub-protocol selected by J_regressor_h36m availability:
+        #     H36M-14: apply J_regressor_h36m [17,6890] to SMPL verts → 17 H36M
+        #              joints → pelvis at H36M index 0 → select 14 via H36M_TO_J14.
+        #              Matches original D-Pose paper protocol exactly.
+        #              ← hmr_trainer.py:104,161-173 (3DPW/else branch)
+        #     SMPL-24: use barycentric joints directly; pelvis = avg(Lhip[1], Rhip[2]).
+        #              Used when J_regressor_h36m.npy is absent. Numbers are NOT
+        #              comparable to the D-Pose paper.
+        #   Fallback: raw MHR skel_state → SMPL index mapping (no SMPL vertices).
+        #             Same SMPL-24 pelvis convention as the non-H36M primary path.
+        #
+        # H36M_TO_J14 maps into the 17-joint H36M regressor output (NOT SMPL-24).
+        # Joint 0 of the 17-joint set is the pelvis; it is not included in J14,
+        # it is used only for centering — matching hmr_trainer.py:162:
+        #   gt_pelvis = gt_keypoints_3d[:, [0], :].clone()
+        # ← original: train/core/constants.py:H36M_TO_J17[:14]
+        # Sentinel: GT SMPL-24 joints for the validation loss breakdown below.
+        # Set inside the barycentric branch where gt_smpl_joints is computed.
+        # Remains None in the MHR-skel fallback branch (barycentric path
+        # unavailable), in which case the val-loss breakdown is skipped.
+        _gt_smpl_joints_for_loss = None
+
+        H36M_TO_J14 = [6, 5, 4, 1, 2, 3, 16, 15, 14, 11, 12, 13, 8, 10]
+
         pred_smpl = pred.get('joints3d_smpl')
         mhr_head = getattr(self.model, 'mhr_head', None)
         gt_verts_val = batch.get('vertices')
         if pred_smpl is not None and mhr_head is not None and gt_verts_val is not None:
-            tv = mhr_head._smpl_tri_vids
-            w = mhr_head._smpl_baryc
+            tv = mhr_head._smpl_tri_vids  # [6890, 3]
+            w  = mhr_head._smpl_baryc     # [6890, 3]
+
+            # GT SMPL vertices via barycentric interpolation of GT MHR vertices.
+            # Shared by both sub-protocols below.
             gv0 = gt_verts_val[:, tv[:, 0]]
             gv1 = gt_verts_val[:, tv[:, 1]]
             gv2 = gt_verts_val[:, tv[:, 2]]
+            gt_smpl_v = (w[:, 0].unsqueeze(0).unsqueeze(-1) * gv0 +
+                         w[:, 1].unsqueeze(0).unsqueeze(-1) * gv1 +
+                         w[:, 2].unsqueeze(0).unsqueeze(-1) * gv2)  # [B, 6890, 3]
             gt_smpl_joints = torch.einsum(
-                'jv,bvd->bjd',
-                mhr_head._smpl_J_reg,
-                (w[:, 0].unsqueeze(0).unsqueeze(-1) * gv0 +
-                 w[:, 1].unsqueeze(0).unsqueeze(-1) * gv1 +
-                 w[:, 2].unsqueeze(0).unsqueeze(-1) * gv2),
-            )
-            pred_keypoints_3d = pred_smpl[:, :24]
-            gt_keypoints_3d = gt_smpl_joints[:, :24]
+                'jv,bvd->bjd', mhr_head._smpl_J_reg, gt_smpl_v)  # [B, 24, 3]
+            # Capture for the validation loss breakdown; detach so the loss
+            # function sees a constant target (same intent as training_step's
+            # torch.no_grad() block that populates batch['joints3d']).
+            _gt_smpl_joints_for_loss = gt_smpl_joints.detach()
+
+            if self.J_regressor_h36m is not None:
+                # --- H36M-14 protocol (paper-comparable) ---
+                #
+                # Pred SMPL vertices: same barycentric mapping applied to pred
+                # MHR vertices (pred['vertices'] is [B, 18439, 3]).
+                # We reuse the same tv/w buffers from mhr_head.
+                pv = pred['vertices']
+                pred_smpl_v = (w[:, 0].unsqueeze(0).unsqueeze(-1) * pv[:, tv[:, 0]] +
+                               w[:, 1].unsqueeze(0).unsqueeze(-1) * pv[:, tv[:, 1]] +
+                               w[:, 2].unsqueeze(0).unsqueeze(-1) * pv[:, tv[:, 2]])  # [B, 6890, 3]
+
+                # Apply H36M J_regressor [17, 6890] → 17 H36M joints each.
+                # ← original: torch.matmul(J_regressor_batch_smpl, cam_vertices)
+                #   where J_regressor_batch_smpl = self.J_regressor.unsqueeze(0).expand(B,-1,-1)
+                #   MHR: equivalent einsum, no explicit batch expansion needed.
+                gt_h36m   = torch.einsum('jv,bvd->bjd', self.J_regressor_h36m, gt_smpl_v)    # [B, 17, 3]
+                pred_h36m = torch.einsum('jv,bvd->bjd', self.J_regressor_h36m, pred_smpl_v)  # [B, 17, 3]
+
+                # Pelvis = H36M joint 0 (not included in J14, used only for centering).
+                # ← original hmr_trainer.py:162: gt_pelvis = gt_keypoints_3d[:, [0], :].clone()
+                gt_pelvis   = gt_h36m[:,   [0], :]  # [B, 1, 3]
+                pred_pelvis = pred_h36m[:, [0], :]  # [B, 1, 3]
+
+                gt_keypoints_3d   = gt_h36m[:,   H36M_TO_J14, :] - gt_pelvis    # [B, 14, 3]
+                pred_keypoints_3d = pred_h36m[:, H36M_TO_J14, :] - pred_pelvis  # [B, 14, 3]
+
+                # Pelvis-center mesh vertices for PVE using the same H36M pelvis,
+                # so that vertex error and joint error share a common root frame.
+                pred_cam_vertices = pred_cam_vertices - pred_pelvis
+                if gt_cam_vertices is not None:
+                    gt_cam_vertices = gt_cam_vertices - gt_pelvis
+            else:
+                # --- SMPL-24 fallback (numbers not comparable to paper) ---
+                #
+                # Use barycentric SMPL joints directly; pelvis = average of
+                # left hip (SMPL joint 1) and right hip (SMPL joint 2).
+                pred_keypoints_3d = pred_smpl[:, :24]
+                gt_keypoints_3d   = gt_smpl_joints[:, :24]
+
+                gt_pelvis   = (gt_keypoints_3d[:,   [1]] + gt_keypoints_3d[:,   [2]]) / 2.0
+                pred_pelvis = (pred_keypoints_3d[:, [1]] + pred_keypoints_3d[:, [2]]) / 2.0
+                pred_keypoints_3d = pred_keypoints_3d - pred_pelvis
+                pred_cam_vertices = pred_cam_vertices - pred_pelvis
+                gt_keypoints_3d   = gt_keypoints_3d - gt_pelvis
+                if gt_cam_vertices is not None:
+                    gt_cam_vertices = gt_cam_vertices - gt_pelvis
         else:
             # Fallback: map MHR skel_state's 127 joints to SMPL ordering via
             # MHR_TO_SMPL_JOINT_INDICES. Slicing the raw [:24] does NOT work —
@@ -488,15 +798,14 @@ class MHRTrainer(pl.LightningModule):
                 gt_keypoints_3d = batch.get('joints',
                                             None)[:, :NUM_MHR_SKELETON_JOINTS]
 
-        # Pelvis-center
-        gt_pelvis = (gt_keypoints_3d[:, [1]] + gt_keypoints_3d[:, [2]]) / 2.0
-        pred_pelvis = (pred_keypoints_3d[:, [1]] +
-                       pred_keypoints_3d[:, [2]]) / 2.0
-        pred_keypoints_3d = pred_keypoints_3d - pred_pelvis
-        pred_cam_vertices = pred_cam_vertices - pred_pelvis
-        gt_keypoints_3d = gt_keypoints_3d - gt_pelvis
-        if gt_cam_vertices is not None:
-            gt_cam_vertices = gt_cam_vertices - gt_pelvis
+            # Pelvis-center: SMPL-24 convention (avg of L/R hip at indices 1, 2).
+            gt_pelvis   = (gt_keypoints_3d[:,   [1]] + gt_keypoints_3d[:,   [2]]) / 2.0
+            pred_pelvis = (pred_keypoints_3d[:, [1]] + pred_keypoints_3d[:, [2]]) / 2.0
+            pred_keypoints_3d = pred_keypoints_3d - pred_pelvis
+            pred_cam_vertices = pred_cam_vertices - pred_pelvis
+            gt_keypoints_3d   = gt_keypoints_3d - gt_pelvis
+            if gt_cam_vertices is not None:
+                gt_cam_vertices = gt_cam_vertices - gt_pelvis
 
         # Absolute error (MPJPE)
         error = torch.sqrt(((pred_keypoints_3d -
@@ -515,6 +824,36 @@ class MHRTrainer(pl.LightningModule):
         val_mpjpe = error.mean(-1)
         val_pampjpe = r_error.mean(-1)
         val_pve = error_verts.mean(-1)
+
+        # --- Validation loss breakdown ---
+        # MPJPE/PA-MPJPE/PVE tell you *how wrong* the predictions are, but not
+        # *which loss component* is responsible.  Running the loss function on
+        # the validation batch surfaces this:
+        #   val/loss_keypoints_3d stuck while val/loss_keypoints drops  →
+        #     the barycentric path is broken or the 3D GT is wrong
+        #   val/loss_shape high while val/loss_keypoints_3d low  →
+        #     pose is roughly right but vertex positions deviate (e.g. scale
+        #     in wrong units, or MHR identity_coeffs not matching GT shape)
+        #   val/loss_regr_pose not decreasing  →
+        #     GT lbs_model_params are missing or the pose branch is saturated
+        #
+        # batch['joints3d'] must be set for the primary keypoint-3d path; we
+        # use _gt_smpl_joints_for_loss captured from the barycentric block
+        # above.  If that is None (MHR-skel fallback was taken), the loss
+        # function will try the MHR-skel fallback internally.
+        #
+        # Wrapped in try/except so a monitoring failure never crashes validation.
+        try:
+            if _gt_smpl_joints_for_loss is not None:
+                batch['joints3d'] = _gt_smpl_joints_for_loss
+            _val_loss, _val_loss_dict = self.loss_fn(pred=pred, gt=batch)
+            for _k, _v in _val_loss_dict.items():
+                self.log(f'val/{_k.split("/")[-1]}', _v.detach(),
+                         on_step=False, on_epoch=True,
+                         logger=True, sync_dist=True)
+        except Exception as _e:
+            logger.warning(
+                f'val loss breakdown failed at batch {batch_nb}: {_e}')
 
         loss_dict = {}
 

@@ -96,9 +96,30 @@ def mhr_losses(
     else:
         loss_regr_expr = torch.FloatTensor(1).fill_(0.).to(pred_expr.device)
 
-    # Pose loss
+    # Pose loss: exclude global root transform from the L2 regression target.
+    #
+    # Original smpl_losses (train/losses/losses.py:L584-590):
+    #   loss_regr_pose = criterion(pred_rotmat[:, 1:], gt_rotmat[:, 1:])
+    #   Skips joint index 0 (global_orient, 6D rotation) because global root
+    #   orientation is already supervised by the camera translation loss.
+    #   Including global orient in the pose loss creates contradictory gradients:
+    #   the camera branch pulls the root toward a good projection while the pose
+    #   loss pulls it toward the mean GT value — they fight each other.
+    #
+    # MHR lbs_model_params layout (204-dim flat vector, from mhr_constants.py):
+    #   [0:3]  global translation (tx, ty, tz) — root position in world space
+    #   [3:6]  global rotation (rx, ry, rz) — root orientation as Euler angles
+    #   [6:]   per-joint LBS parameters (twist/bend angles, scale corrections…)
+    # Excluding dims [0:6] mirrors the original's philosophy: do not supervise
+    # the global root transform via parameter regression because the camera
+    # path already handles it.
+    #
+    # Verification: if the lbs_model_params layout ever changes (e.g. rotation
+    # moves to a different offset), update this slice. The layout can be checked
+    # by running mhr_model.pt forward with a unit perturbation on a single dim
+    # and observing which joint / root transform changes.
     if len(pred_pose) > 0 and gt_pose is not None:
-        loss_regr_pose = criterion(pred_pose, gt_pose)
+        loss_regr_pose = criterion(pred_pose[:, 6:], gt_pose[:, 6:])
     else:
         loss_regr_pose = torch.FloatTensor(1).fill_(0.).to(pred_pose.device)
 
@@ -445,9 +466,50 @@ class MHRLoss(nn.Module):
             'loss/loss_cam': loss_cam,
         }
 
-        # Compute total loss
-        loss = sum(loss_dict.values())
-        loss *= self.loss_weight
+        # Total loss aggregation.
+        #
+        # Original (train/losses/losses.py:487-506):
+        #   if SUPERVISE_SEGM:
+        #       loss_body = sum(loss_dict.values())          # weighted body losses only
+        #       loss = (loss_body * 10 + cross_entropy * 0.1) * loss_weight
+        #   elif SUPERVISE_DEPTH:
+        #       loss = (loss_body * 10 + depth_loss * 0.1) * loss_weight
+        #   else:
+        #       loss = sum(loss_dict.values()) * loss_weight
+        #
+        # The 10× body / 0.1× auxiliary split prevents noisy auxiliary outputs
+        # (segmentation rendering, depth prediction) from overwhelming the 3D
+        # pose signal, particularly when those heads are freshly initialised.
+        # Without the 10× boost, body losses and auxiliary losses are on a
+        # comparable scale; the model can reduce total loss cheaply by
+        # optimising the auxiliary outputs instead of improving pose.
+        #
+        # MHR currently does NOT compute cross_entropy_loss or depth_loss
+        # (the NeuralRenderer required by generate_part_labels is not wired up).
+        # We apply the formula structurally: when SUPERVISE_SEGM or
+        # SUPERVISE_DEPTH is True, body losses get 10× amplification; the
+        # auxiliary terms are zero for now.
+        #
+        # IMPORTANT — config interaction:
+        #   With SUPERVISE_SEGM=True (current default), effective loss scale
+        #   becomes sum * 10 * LOSS_WEIGHT.  If LOSS_WEIGHT=60 (default), the
+        #   effective scale is 600×, 10× larger than before.  To preserve the
+        #   same absolute gradient magnitude as the no-segm path, set
+        #   LOSS_WEIGHT: 6.0 in config_mhr.yaml when SUPERVISE_SEGM is True.
+        #
+        # TODO: wire up the NeuralRenderer in MHRLoss to compute
+        #   cross_entropy_loss from pred['part_segms'] and GT part labels,
+        #   then switch to: (body * 10 + cross_entropy * 0.1) * loss_weight
+        supervise_segm = bool(self.hparams and self.hparams.DATASET.SUPERVISE_SEGM)
+        supervise_depth = bool(self.hparams and self.hparams.DATASET.SUPERVISE_DEPTH)
+        if supervise_segm or supervise_depth:
+            # Auxiliary losses (cross_entropy, depth) not yet computed — they
+            # contribute 0.  Only the 10× body amplification is applied.
+            loss = sum(loss_dict.values()) * 10 * self.loss_weight
+        else:
+            # Neither auxiliary head active — plain weighted sum, same as
+            # original's else branch.
+            loss = sum(loss_dict.values()) * self.loss_weight
 
         loss_dict['loss/loss'] = loss
 
