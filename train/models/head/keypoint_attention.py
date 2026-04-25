@@ -40,7 +40,9 @@ class KeypointAttention(nn.Module):
             normalized_heatmap = F.softmax(heatmaps.reshape(batch_size, num_joints, -1), dim=-1)
         features = features.reshape(batch_size, -1, height*width)
 
-        attended_features = torch.matmul(normalized_heatmap, features.transpose(2,1))
+        # .contiguous() is required: transpose(2,1) produces row-stride=1, which
+        # violates cuBLAS's requirement that ldb >= num_cols for strided GEMM.
+        attended_features = torch.matmul(normalized_heatmap, features.transpose(2,1).contiguous())
         attended_features = attended_features.transpose(2,1)
 
         if self.use_conv:
