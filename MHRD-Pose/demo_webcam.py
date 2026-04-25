@@ -271,7 +271,7 @@ def main(args):
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
     torch.set_float32_matmul_precision('medium')
 
-    with torch.cuda.amp.autocast(), torch.no_grad():
+    with torch.no_grad():
         mot = MPT(
             device=torch.device('cuda'),
             batch_size=4,
