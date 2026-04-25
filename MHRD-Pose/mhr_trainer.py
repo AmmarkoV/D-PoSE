@@ -201,6 +201,7 @@ class MHRTrainer(pl.LightningModule):
                 torch.from_numpy(np.load(_h36m_path)).float())
             logger.info(
                 f'Loaded H36M J_regressor from {_h36m_path} — '
+                f'shape {list(self.J_regressor_h36m.shape)} — '
                 'validation will use H36M-14 protocol (paper-comparable).')
         else:
             self.J_regressor_h36m = None
