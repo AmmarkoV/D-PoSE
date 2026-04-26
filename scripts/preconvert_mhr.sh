@@ -21,17 +21,19 @@ GPU=0
 BATCH_SIZE=64
 RESUME_FLAG=""
 REGENERATE_FLAG=""
+SKIP_EXTRACT=0
 EXTRA_ARGS=""
 
 # Parse args
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --config)     CONFIG="$2";                  shift 2 ;;
-        --gpu)        GPU="$2";                     shift 2 ;;
-        --batch_size) BATCH_SIZE="$2";              shift 2 ;;
-        --resume)     RESUME_FLAG="--resume";       shift ;;
-        --regenerate) REGENERATE_FLAG="--regenerate"; shift ;;
-        *)            EXTRA_ARGS="$EXTRA_ARGS $1";  shift ;;
+        --config)          CONFIG="$2";                    shift 2 ;;
+        --gpu)             GPU="$2";                       shift 2 ;;
+        --batch_size)      BATCH_SIZE="$2";                shift 2 ;;
+        --resume)          RESUME_FLAG="--resume";         shift ;;
+        --regenerate)      REGENERATE_FLAG="--regenerate"; shift ;;
+        --skip-extraction) SKIP_EXTRACT=1;                 shift ;;
+        *)                 EXTRA_ARGS="$EXTRA_ARGS $1";    shift ;;
     esac
 done
 
@@ -58,8 +60,41 @@ echo "  Config:     ${CONFIG}"
 echo "  GPU:        ${GPU}"
 echo "  Batch size: ${BATCH_SIZE}"
 echo "  Resume:     ${RESUME_FLAG:-no}
-  Regenerate: ${REGENERATE_FLAG:-no}"
+  Regenerate: ${REGENERATE_FLAG:-no}
+  Extract:    $([ $SKIP_EXTRACT -eq 1 ] && echo no || echo auto)"
 echo "============================================="
+echo ""
+
+# ---------------------------------------------------------------------------
+# Auto-extract training image tars if the corresponding directory is missing.
+# Each foo_6fps.tar extracts to foo_6fps/ in the same directory.
+# Training does not need images for cache generation, but does for the actual
+# training loop — extracting here ensures a single setup step covers both.
+# Pass --skip-extraction to disable (e.g. when images are already extracted
+# or when running cache-only on a machine without the image storage mounted).
+# ---------------------------------------------------------------------------
+IMAGES_DIR="${PROJECT_ROOT}/data/training_images"
+if [ $SKIP_EXTRACT -eq 0 ] && [ -d "${IMAGES_DIR}" ]; then
+    echo "[extract] Checking for unextracted tars in ${IMAGES_DIR} ..."
+    found_any=0
+    for tar_file in "${IMAGES_DIR}"/*.tar; do
+        [ -f "${tar_file}" ] || continue
+        dir_name="${tar_file%.tar}"
+        if [ ! -d "${dir_name}" ]; then
+            found_any=1
+            echo "[extract] Extracting $(basename ${tar_file}) ..."
+            tar xf "${tar_file}" -C "${IMAGES_DIR}"
+            echo "[extract] Done: $(basename ${dir_name})"
+        fi
+    done
+    if [ $found_any -eq 0 ]; then
+        echo "[extract] All tars already extracted — nothing to do."
+    fi
+elif [ $SKIP_EXTRACT -eq 1 ]; then
+    echo "[extract] Skipped (--skip-extraction)"
+else
+    echo "[extract] training_images dir not found at ${IMAGES_DIR} — skipping extraction"
+fi
 echo ""
 
 cd "${PROJECT_ROOT}"
