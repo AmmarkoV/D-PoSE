@@ -144,7 +144,7 @@ class MHRRegressor(nn.Module):
 
     def __init__(self,
                  input_dim=32,
-                 hidden_dim=32,
+                 hidden_dim=64, #This controls how fat the regressor is!
                  num_layer=1,
                  use_depth=False):
         # MAPPED FROM: Regressor.__init__ (refit_regressor.py:L60)
