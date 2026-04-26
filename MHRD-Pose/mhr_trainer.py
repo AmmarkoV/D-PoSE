@@ -243,18 +243,44 @@ class MHRTrainer(pl.LightningModule):
                      on_step=False, on_epoch=True, logger=True, sync_dist=True)
             if self.hparams.TRAINING.FREEZE_PRETRAINED:
                 logger.info('=' * 60)
-                logger.info('UNFREEZE — switching optimizer to uniform LR for all layers')
+                logger.info('UNFREEZE — re-enabling backbone gradients and adding to optimizer')
                 logger.info('=' * 60)
                 base_lr = self.hparams.OPTIMIZER.LR
-                # Mutate the existing optimizer's param_groups in-place
-                # so Lightning's references stay valid. Adam state is
-                # keyed by tensor id, not index, so it transfers cleanly.
+                wd = self.hparams.OPTIMIZER.WD
+                pretrained_prefixes = ('backbone.', 'depth_decoder.',
+                                       'segmentation_decoder.', 'attention.')
+
+                # Step 1: re-enable requires_grad for all frozen pretrained params.
+                # _freeze_pretrained() set these to False; configure_optimizers then
+                # excluded them entirely. Simply changing LR (old behaviour) had no
+                # effect because the params were never in any optimizer param group.
+                newly_unfrozen = []
+                for name, param in self.named_parameters():
+                    bare = name[len('model.'):] if name.startswith('model.') else name
+                    if any(bare.startswith(p) for p in pretrained_prefixes) \
+                            and not param.requires_grad:
+                        param.requires_grad = True
+                        newly_unfrozen.append(param)
+
+                # Step 2: add newly unfrozen params to the existing optimizer so
+                # Adam state is tracked from this epoch onward. add_param_group()
+                # preserves all existing state — no warm-restart penalty.
                 opt = self.optimizers()
                 if isinstance(opt, list):
                     opt = opt[0]
+                if newly_unfrozen:
+                    opt.add_param_group(
+                        {'params': newly_unfrozen, 'lr': base_lr, 'weight_decay': wd})
+
+                # Step 3: set uniform LR across all groups (head + backbone).
                 for pg in opt.param_groups:
                     pg['lr'] = base_lr
-                logger.info(f'  All params now use lr={base_lr:.1e}')
+
+                trainable = sum(p.numel() for p in self.parameters() if p.requires_grad)
+                total = sum(p.numel() for p in self.parameters())
+                logger.info(f'  Re-enabled {len(newly_unfrozen)} param tensors')
+                logger.info(f'  Trainable: {trainable:,} / {total:,} params')
+                logger.info(f'  All groups now lr={base_lr:.1e}')
                 logger.info('=' * 60)
 
     def on_train_start(self):
