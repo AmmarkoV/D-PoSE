@@ -204,16 +204,27 @@ def main():
     logger.info(f"Cache directory:     {cache_dir}")
     logger.info(f"Batch size:          {args.batch_size}")
 
+    failed = []
     for ds_name in datasets:
         is_train = ds_name not in val_datasets or ds_name in train_datasets
-        preconvert(ds_name,
-                   hparams.DATASET,
-                   cache_dir,
-                   args.batch_size,
-                   args.resume,
-                   is_train=is_train)
+        try:
+            preconvert(ds_name,
+                       hparams.DATASET,
+                       cache_dir,
+                       args.batch_size,
+                       args.resume,
+                       is_train=is_train)
+        except Exception as e:
+            logger.error(f"[{ds_name}] FAILED — skipping: {e}")
+            failed.append((ds_name, str(e)))
 
-    logger.info("All datasets converted.")
+    if failed:
+        logger.warning(f"{len(failed)} dataset(s) failed:")
+        for ds_name, err in failed:
+            logger.warning(f"  {ds_name}: {err}")
+        logger.warning("Remove failed datasets from DATASETS_AND_RATIOS or fix their label NPZs.")
+    else:
+        logger.info("All datasets converted.")
 
 
 if __name__ == '__main__':
