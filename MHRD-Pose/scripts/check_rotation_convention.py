@@ -38,9 +38,11 @@ def axis_angle_to_rotmat(aa):
     c = np.cos(angle)      # (N,1)
     t = 1.0 - c            # (N,1)
 
-    x, y, z = axis[:, 0], axis[:, 1], axis[:, 2]
+    x = axis[:, 0:1]  # (N,1) — keeps broadcast shape consistent with s/c/t
+    y = axis[:, 1:2]
+    z = axis[:, 2:3]
 
-    R = np.stack([
+    R = np.concatenate([
         t*x*x + c,   t*x*y - s*z, t*x*z + s*y,
         t*x*y + s*z, t*y*y + c,   t*y*z - s*x,
         t*x*z - s*y, t*y*z + s*x, t*z*z + c,
