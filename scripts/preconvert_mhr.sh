@@ -22,6 +22,7 @@ BATCH_SIZE=64
 RESUME_FLAG=""
 REGENERATE_FLAG=""
 SKIP_EXTRACT=0
+DATASETS_FLAG=0
 EXTRA_ARGS=""
 
 # Parse args
@@ -33,9 +34,15 @@ while [[ $# -gt 0 ]]; do
         --resume)          RESUME_FLAG="--resume";         shift ;;
         --regenerate)      REGENERATE_FLAG="--regenerate"; shift ;;
         --skip-extraction) SKIP_EXTRACT=1;                 shift ;;
+        --datasets)        DATASETS_FLAG=1; EXTRA_ARGS="$EXTRA_ARGS $1"; shift ;;
         *)                 EXTRA_ARGS="$EXTRA_ARGS $1";    shift ;;
     esac
 done
+
+# --datasets implies skip-extraction: extraction is only needed for a full run
+if [ $DATASETS_FLAG -eq 1 ] && [ $SKIP_EXTRACT -eq 0 ]; then
+    SKIP_EXTRACT=1
+fi
 
 # Activate venv
 if [ -f "${VENV_PATH}/bin/activate" ]; then
