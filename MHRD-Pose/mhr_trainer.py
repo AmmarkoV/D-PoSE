@@ -268,19 +268,22 @@ class MHRTrainer(pl.LightningModule):
                 opt = self.optimizers()
                 if isinstance(opt, list):
                     opt = opt[0]
+                # Backbone gets a much lower LR than the head to avoid destroying
+                # pretrained features. Full base_lr caused catastrophic forgetting:
+                # backbone norm=819 vs head=207 → upside-down output and mean-pose
+                # collapse after only 15 fine-tuning epochs.
+                backbone_lr = base_lr / 10.0
                 if newly_unfrozen:
                     opt.add_param_group(
-                        {'params': newly_unfrozen, 'lr': base_lr, 'weight_decay': wd})
+                        {'params': newly_unfrozen, 'lr': backbone_lr, 'weight_decay': wd})
 
-                # Step 3: set uniform LR across all groups (head + backbone).
-                for pg in opt.param_groups:
-                    pg['lr'] = base_lr
-
+                # Step 3: keep head LR unchanged, backbone uses backbone_lr.
+                # (Only the first param group is the head; newly-added group is backbone.)
                 trainable = sum(p.numel() for p in self.parameters() if p.requires_grad)
                 total = sum(p.numel() for p in self.parameters())
                 logger.info(f'  Re-enabled {len(newly_unfrozen)} param tensors')
                 logger.info(f'  Trainable: {trainable:,} / {total:,} params')
-                logger.info(f'  All groups now lr={base_lr:.1e}')
+                logger.info(f'  Head lr={base_lr:.1e}  Backbone lr={backbone_lr:.1e}')
                 logger.info('=' * 60)
 
     def on_train_start(self):
