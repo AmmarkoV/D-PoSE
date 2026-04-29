@@ -58,7 +58,7 @@ TRAINING:
   PRETRAINED_CKPT: 'coco'
   PRETRAINED_LIT: 'data/ckpt/paper_arxiv.ckpt'
   FREEZE_PRETRAINED: True
-  UNFREEZE_EPOCH: 100  # unfreeze at ~68% to give backbone 48 epochs of gentle fine-tuning
+  UNFREEZE_EPOCH: 133  #  ~90% of 148
   MAX_EPOCHS: 148  # 148 * 1355 steps/epoch ≈ 200k steps
   LOG_SAVE_INTERVAL: 50
   LOG_FREQ_TB_IMAGES: 500
