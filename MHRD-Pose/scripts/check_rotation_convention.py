@@ -64,25 +64,25 @@ def analyze_dataset(npz_path, max_samples=50_000):
     """
     try:
         data = np.load(npz_path, allow_pickle=False)
+
+        # Locate pose array — different datasets may use slightly different keys
+        pose_key = None
+        for k in ('pose_cam', 'pose', 'poses'):
+            if k in data:
+                pose_key = k
+                break
+        if pose_key is None:
+            return None, f"no pose key found; keys={list(data.keys())[:10]}"
+
+        pose = data[pose_key]  # (N, D) — first 3 dims are global root aa
+
+        if pose.ndim != 2 or pose.shape[1] < 3:
+            return None, f"unexpected pose shape {pose.shape}"
+
+        N = min(len(pose), max_samples)
+        aa = pose[:N, :3].astype(np.float32)
     except Exception as e:
         return None, str(e)
-
-    # Locate pose array — different datasets may use slightly different keys
-    pose_key = None
-    for k in ('pose_cam', 'pose', 'poses'):
-        if k in data:
-            pose_key = k
-            break
-    if pose_key is None:
-        return None, f"no pose key found; keys={list(data.keys())[:10]}"
-
-    pose = data[pose_key]  # (N, D) — first 3 dims are global root aa
-
-    if pose.ndim != 2 or pose.shape[1] < 3:
-        return None, f"unexpected pose shape {pose.shape}"
-
-    N = min(len(pose), max_samples)
-    aa = pose[:N, :3].astype(np.float32)
 
     R = axis_angle_to_rotmat(aa)  # (N,3,3)
 
