@@ -892,7 +892,7 @@ def detect_people(frames: List[np.ndarray],
             mask   = scores > 0.7
             boxes, scores = boxes[mask], scores[mask]
             dets_np = torch.cat([boxes, scores.unsqueeze(1)],
-                                dim=1).cpu().numpy()
+                                dim=1).detach().cpu().numpy()
         else:
             dets_np = np.empty((0, 5))
         prep = mot.prepare_output_detections([dets_np])
