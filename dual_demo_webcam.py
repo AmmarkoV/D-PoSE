@@ -173,13 +173,15 @@ def overlay_joints_from_dpose(frame_bgr, dpose_output):
     if skel is None:
         return frame_bgr
     skel = _to_numpy(skel)
-    if skel.ndim == 3:
-        skel = skel[0]                            # [127, 8]
-    joints_cm = skel[MHR_TO_SMPL_JOINT_INDICES, :3]   # [24, 3] cm, Y-up
-    joints_m  = joints_cm * 0.01
-    joints2d  = project_yup_joints(joints_m)
-    return draw_joints_2d(frame_bgr, joints2d,
-                          joint_color=(0, 255, 200), bone_color=(0, 180, 255))
+    if skel.ndim == 2:
+        skel = skel[np.newaxis]   # [1, 127, 8]
+    for b in range(len(skel)):
+        joints_cm = skel[b][MHR_TO_SMPL_JOINT_INDICES, :3]   # [24, 3] cm, Y-up
+        joints_m  = joints_cm * 0.01
+        joints2d  = project_yup_joints(joints_m)
+        frame_bgr = draw_joints_2d(frame_bgr, joints2d,
+                                   joint_color=(0, 255, 200), bone_color=(0, 180, 255))
+    return frame_bgr
 
 
 def overlay_joints_from_mhrd(frame_bgr, mhrd_output):
@@ -188,28 +190,30 @@ def overlay_joints_from_mhrd(frame_bgr, mhrd_output):
         return frame_bgr
     j2d = mhrd_output.get('joints2d_smpl')
     if j2d is None:
-        # Fallback: project joints3d_smpl with pred_cam_t
+        # Fallback: project joints3d_smpl + pred_cam_t (Y-down OpenCV convention)
         j3d  = mhrd_output.get('joints3d_smpl')
         camt = mhrd_output.get('pred_cam_t')
         if j3d is None or camt is None:
             return frame_bgr
         j3d  = _to_numpy(j3d)
         camt = _to_numpy(camt)
-        if j3d.ndim == 3: j3d = j3d[0]
-        if camt.ndim == 2: camt = camt[0]
-        # Y-down OpenCV projection: v = cy + fl*(y+ty)/(z+tz)
-        xyz = j3d + camt[None, :]
-        z = np.where(np.abs(xyz[:, 2]) < 0.05, 0.05, xyz[:, 2])
-        u = IMG_W / 2 + FOCAL_LENGTH * xyz[:, 0] / z
-        v = IMG_H / 2 + FOCAL_LENGTH * xyz[:, 1] / z
-        j2d_np = np.stack([u, v], axis=1)
+        if j3d.ndim == 2: j3d = j3d[np.newaxis]
+        if camt.ndim == 1: camt = camt[np.newaxis]
+        for b in range(len(j3d)):
+            xyz = j3d[b] + camt[b][None, :]
+            z = np.where(np.abs(xyz[:, 2]) < 0.05, 0.05, xyz[:, 2])
+            u = IMG_W / 2 + FOCAL_LENGTH * xyz[:, 0] / z
+            v = IMG_H / 2 + FOCAL_LENGTH * xyz[:, 1] / z
+            frame_bgr = draw_joints_2d(frame_bgr, np.stack([u, v], axis=1),
+                                       joint_color=(0, 255, 255), bone_color=(255, 128, 0))
     else:
         j2d_np = _to_numpy(j2d)
-        if j2d_np.ndim == 3:
-            j2d_np = j2d_np[0]   # take first person
-
-    return draw_joints_2d(frame_bgr, j2d_np,
-                          joint_color=(0, 255, 255), bone_color=(255, 128, 0))
+        if j2d_np.ndim == 2:
+            j2d_np = j2d_np[np.newaxis]   # [1, 24, 2]
+        for b in range(len(j2d_np)):
+            frame_bgr = draw_joints_2d(frame_bgr, j2d_np[b],
+                                       joint_color=(0, 255, 255), bone_color=(255, 128, 0))
+    return frame_bgr
 
 
 # ── Pose-vector text panel ────────────────────────────────────────────────────
