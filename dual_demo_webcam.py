@@ -216,6 +216,224 @@ def overlay_joints_from_mhrd(frame_bgr, mhrd_output):
     return frame_bgr
 
 
+# ── Per-frame diagnostics ─────────────────────────────────────────────────────
+SMPL_JOINT_NAMES_SHORT = [
+    'pelvis', 'L_hip', 'R_hip', 'spine1', 'L_knee', 'R_knee',
+    'spine2', 'L_ankle', 'R_ankle', 'spine3', 'L_foot', 'R_foot',
+    'neck', 'L_collar', 'R_collar', 'head',
+    'L_sho', 'R_sho', 'L_elb', 'R_elb', 'L_wri', 'R_wri', 'L_hand', 'R_hand',
+]
+
+def compute_elbow_angle_joints(j3d):
+    """
+    Compute elbow bend angles from 3D joints [J, 3].
+    Returns (left_elbow_deg, right_elbow_deg) or (nan, nan).
+    SMPL indices: L_SHO=16, L_ELB=18, L_WRIST=20; R_SHO=17, R_ELB=19, R_WRIST=21.
+    """
+    if j3d.shape[0] < 22:
+        return float('nan'), float('nan')
+    def angle(a, b, c):
+        """Angle at joint b formed by a-b-c."""
+        v1 = a - b
+        v2 = c - b
+        n1, n2 = np.linalg.norm(v1), np.linalg.norm(v2)
+        if n1 < 1e-4 or n2 < 1e-4:
+            return float('nan')
+        cos_a = np.clip(np.dot(v1, v2) / (n1 * n2), -1, 1)
+        return float(np.degrees(np.arccos(cos_a)))
+    l_elbow = angle(j3d[16], j3d[18], j3d[20])
+    r_elbow = angle(j3d[17], j3d[19], j3d[21])
+    return l_elbow, r_elbow
+
+
+def extract_smpl_joints3d_dpose(dpose_output):
+    """Extract 24 SMPL joints in metres from D-PoSE mhr_skel_state."""
+    if dpose_output is None:
+        return None
+    skel = dpose_output.get('mhr_skel_state')
+    if skel is None:
+        return None
+    skel = _to_numpy(skel)
+    if skel.ndim == 2:
+        skel = skel[np.newaxis]
+    # MHR joint positions are in cm, Y-up
+    joints_cm = skel[0][MHR_TO_SMPL_JOINT_INDICES, :3]
+    return joints_cm * 0.01  # metres
+
+
+def extract_smpl_joints3d_mhrd(mhrd_output):
+    """Extract 24 SMPL joints in metres from MHRD-Pose output."""
+    if mhrd_output is None:
+        return None
+    j3d = mhrd_output.get('joints3d_smpl')
+    if j3d is not None:
+        j3d = _to_numpy(j3d)
+        if j3d.ndim == 2:
+            j3d = j3d[np.newaxis]
+        # MHRD-Pose joints3d_smpl are already in metres, Y-down camera frame.
+        # Add cam_t to get world position
+        camt = mhrd_output.get('pred_cam_t')
+        if camt is not None:
+            camt = _to_numpy(camt)
+            if camt.ndim == 1:
+                camt = camt[np.newaxis]
+            return (j3d[0] + camt[0]).astype(np.float32)
+        return j3d[0].astype(np.float32)
+    # Fallback: joints3d + pred_cam_t
+    j3d = mhrd_output.get('joints3d')
+    camt = mhrd_output.get('pred_cam_t')
+    if j3d is not None and camt is not None:
+        j3d = _to_numpy(j3d)
+        camt = _to_numpy(camt)
+        if j3d.ndim == 2:
+            j3d = j3d[np.newaxis]
+        if camt.ndim == 1:
+            camt = camt[np.newaxis]
+        return (j3d[0] + camt[0]).astype(np.float32)
+    return None
+
+
+def extract_joints2d_dpose(dpose_output):
+    """Project D-PoSE SMPL joints to 2D pixel coords."""
+    j3d = extract_smpl_joints3d_dpose(dpose_output)
+    if j3d is None:
+        return None
+    return project_yup_joints(j3d)
+
+
+def extract_joints2d_mhrd(mhrd_output):
+    """Extract 2D SMPL joints from MHRD-Pose output."""
+    if mhrd_output is None:
+        return None
+    j2d = mhrd_output.get('joints2d_smpl')
+    if j2d is not None:
+        j2d = _to_numpy(j2d)
+        if j2d.ndim == 2:
+            j2d = j2d[np.newaxis]
+        return j2d[0]
+    # Fallback: project from joints3d_smpl + pred_cam_t (Y-down)
+    j3d_raw = mhrd_output.get('joints3d_smpl')
+    camt = mhrd_output.get('pred_cam_t')
+    if j3d_raw is not None and camt is not None:
+        j3d_raw = _to_numpy(j3d_raw)
+        camt = _to_numpy(camt)
+        if j3d_raw.ndim == 2:
+            j3d_raw = j3d_raw[np.newaxis]
+        if camt.ndim == 1:
+            camt = camt[np.newaxis]
+        xyz = j3d_raw[0] + camt[0]
+        z = np.where(np.abs(xyz[:, 2]) < 0.05, 0.05, xyz[:, 2])
+        u = IMG_W / 2 + FOCAL_LENGTH * xyz[:, 0] / z
+        v = IMG_H / 2 + FOCAL_LENGTH * xyz[:, 1] / z
+        return np.stack([u, v], axis=1)
+    return None
+
+
+def print_frame_diag(fn, raw_dets, dpose_output, mhrd_output, frame_bgr):
+    """Print per-frame diagnostics comparing D-PoSE and MHRD-Pose."""
+    h, w = frame_bgr.shape[:2]
+    print(f'\n{"="*70}')
+    print(f'  Frame {fn}')
+    print(f'{"="*70}')
+
+    # ── Detection info ──
+    if raw_dets is not None and len(raw_dets) > 0:
+        for i, det in enumerate(raw_dets):
+            cx, cy, scale = det[0], det[1], det[2]
+            score = det[4] if len(det) > 4 else '?'
+            print(f'  Det#{i}: center=({cx:.0f},{cy:.0f})  height={scale:.0f}px  score={score:.2f}')
+            print(f'         bbox: x=[{cx-scale/2:.0f},{cx+scale/2:.0f}]  y=[{cy-scale/2:.0f},{cy+scale/2:.0f}]  img=({w}x{h})')
+    else:
+        print('  No detections')
+        return
+
+    # ── Camera translation ──
+    # D-PoSE uses pred_cam_t from the HMR model (before MHR conversion)
+    dpose_camt = None
+    mhrd_camt = None
+
+    # D-PoSE: the mhr_output doesn't contain pred_cam_t directly.
+    # We need to look at the hmr_output that was used to compute the vertices.
+    # Unfortunately it's not in the returned dict. Instead, infer from root position.
+    dpose_j3d = extract_smpl_joints3d_dpose(dpose_output)
+    mhrd_j3d = extract_smpl_joints3d_mhrd(mhrd_output)
+
+    if dpose_j3d is not None:
+        dpose_root = dpose_j3d[0]  # pelvis
+        print(f'  D-PoSE  pelvis_3d:  [{dpose_root[0]:+ .3f}, {dpose_root[1]:+ .3f}, {dpose_root[2]:+ .3f}] m (Y-up)')
+    if mhrd_j3d is not None:
+        mhrd_root = mhrd_j3d[0]
+        print(f'  MHRD    pelvis_3d:  [{mhrd_root[0]:+ .3f}, {mhrd_root[1]:+ .3f}, {mhrd_root[2]:+ .3f}] m (Y-down-cam)')
+
+    if dpose_j3d is not None and mhrd_j3d is not None:
+        root_diff = np.linalg.norm(dpose_root - mhrd_root)
+        print(f'  Root diff: {root_diff:.3f} m')
+
+    # ── Elbow angles ──
+    if dpose_j3d is not None and dpose_j3d.shape[0] >= 22:
+        l_e, r_e = compute_elbow_angle_joints(dpose_j3d)
+        print(f'  D-PoSE  elbows: L={l_e:.1f}°  R={r_e:.1f}°  mean={(l_e+r_e)/2:.1f}°')
+    if mhrd_j3d is not None and mhrd_j3d.shape[0] >= 22:
+        # MHRD joints are Y-down — flip Y for angle computation (angles are invariant to uniform flip)
+        l_e, r_e = compute_elbow_angle_joints(mhrd_j3d)
+        print(f'  MHRD    elbows: L={l_e:.1f}°  R={r_e:.1f}°  mean={(l_e+r_e)/2:.1f}°')
+
+    # ── 2D joint comparison ──
+    dpose_j2d = extract_joints2d_dpose(dpose_output)
+    mhrd_j2d = extract_joints2d_mhrd(mhrd_output)
+
+    if dpose_j2d is not None and mhrd_j2d is not None:
+        min_j = min(dpose_j2d.shape[0], mhrd_j2d.shape[0])
+        per_joint_diffs = []
+        for j in range(min(min_j, 22)):
+            diff = np.linalg.norm(dpose_j2d[j] - mhrd_j2d[j])
+            name = SMPL_JOINT_NAMES_SHORT[j] if j < len(SMPL_JOINT_NAMES_SHORT) else str(j)
+            per_joint_diffs.append((j, name, diff))
+
+        mean_diff = np.mean([d[2] for d in per_joint_diffs])
+        max_diff_j = max(per_joint_diffs, key=lambda x: x[2])
+        print(f'  2D joint diff (px): mean={mean_diff:.1f}  max={max_diff_j[2]:.1f} @ {max_diff_j[1]}')
+
+        # Show joints with biggest discrepancies
+        per_joint_diffs.sort(key=lambda x: x[2], reverse=True)
+        top5 = per_joint_diffs[:5]
+        parts = ', '.join(f'{j[1]}={j[2]:.0f}px' for j in top5)
+        print(f'    worst: {parts}')
+
+        # ── Joints vs bbox center ──
+        if raw_dets is not None and len(raw_dets) > 0:
+            bcx, bcy = raw_dets[0][0], raw_dets[0][1]
+            dpose_j2d_mean_x = np.mean(dpose_j2d[:22, 0])
+            dpose_j2d_mean_y = np.mean(dpose_j2d[:22, 1])
+            mhrd_j2d_mean_x = np.mean(mhrd_j2d[:22, 0])
+            mhrd_j2d_mean_y = np.mean(mhrd_j2d[:22, 1])
+            print(f'  Bbox center: ({bcx:.0f}, {bcy:.0f})')
+            print(f'  D-PoSE  mean joint2d: ({dpose_j2d_mean_x:.0f}, {dpose_j2d_mean_y:.0f})  '
+                  f'dist_to_bbox={np.hypot(dpose_j2d_mean_x-bcx, dpose_j2d_mean_y-bcy):.0f}px')
+            print(f'  MHRD    mean joint2d: ({mhrd_j2d_mean_x:.0f}, {mhrd_j2d_mean_y:.0f})  '
+                  f'dist_to_bbox={np.hypot(mhrd_j2d_mean_x-bcx, mhrd_j2d_mean_y-bcy):.0f}px')
+
+    # ── Pose vector comparison ──
+    dpose_vec = None
+    mhrd_vec = None
+    if dpose_output is not None:
+        p = dpose_output.get('mhr_parameters')
+        if p is not None:
+            raw = p.get('lbs_model_params')
+            if raw is not None:
+                dpose_vec = _to_numpy(raw).flatten()
+    if mhrd_output is not None:
+        raw = mhrd_output.get('pred_pose')
+        if raw is not None:
+            mhrd_vec = _to_numpy(raw).flatten()
+
+    if dpose_vec is not None and mhrd_vec is not None:
+        min_len = min(len(dpose_vec), len(mhrd_vec))
+        diff = np.abs(dpose_vec[:min_len] - mhrd_vec[:min_len])
+        print(f'  Pose vec: dims D={len(dpose_vec)} M={len(mhrd_vec)}  '
+              f'mean_abs_diff={np.mean(diff):.4f}  max_diff={np.max(diff):.4f} @ idx {np.argmax(diff)}')
+
+
 # ── Pose-vector text panel ────────────────────────────────────────────────────
 def make_vector_panel(title, vec, width, height=230, vals_per_row=6, max_rows=10):
     """
@@ -438,6 +656,10 @@ def main(args):
             except Exception as e:
                 logger.warning(f'MHRD-Pose inference error: {e}')
         mhrd_bgr = cap_m.get('front', frame_bgr)
+
+        # ── Per-frame diagnostics (first 10 frames, then every 20th) ──────────
+        if frame_number <= 10 or frame_number % 20 == 0:
+            print_frame_diag(frame_number, raw_dets, dpose_output, mhrd_output, frame_bgr)
 
         # ── Assemble display ──────────────────────────────────────────────────
         display = build_display(
