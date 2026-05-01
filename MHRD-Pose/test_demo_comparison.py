@@ -856,17 +856,32 @@ class OriginalInference:
 
 # ─── Detection helper ─────────────────────────────────────────────────────────
 
+def _build_mot(device: torch.device):
+    """Build an MPT detector, falling back from yolo → maskrcnn.
+
+    yolov3 requires a pre-compiled numpy==1.14.4 wheel which can't be built on
+    Python 3.12.  maskrcnn uses torchvision directly and is always available.
+    """
+    from multi_person_tracker import MPT
+    for dtype in ('yolo', 'maskrcnn'):
+        try:
+            mot = MPT(device=device, batch_size=4, display=False,
+                      detector_type=dtype, output_format='dict',
+                      yolo_img_size=416)
+            print(f'  Detector: {dtype}')
+            return mot
+        except (ImportError, ModuleNotFoundError):
+            print(f'  Detector {dtype} unavailable, trying next …')
+    raise RuntimeError('No working MPT detector found (tried yolo, maskrcnn)')
+
+
 def detect_people(frames: List[np.ndarray],
                   device: torch.device) -> List[np.ndarray]:
-    """Run YOLO+MPT detection on a list of RGB frames.
+    """Run person detection on a list of RGB frames.
 
     Returns a list of [M, 5] arrays (cx, cy, scale, _, score).
     """
-    from multi_person_tracker import MPT
-
-    mot = MPT(device=device, batch_size=4, display=False,
-              detector_type='yolo', output_format='dict',
-              yolo_img_size=416)
+    mot = _build_mot(device)
     detections = []
     for frame in frames:
         t = torch.tensor(frame).permute(2, 0, 1).unsqueeze(0) / 255.0
