@@ -374,11 +374,11 @@ class DatasetHMR(OriginalDatasetHMR):
         mhr_verts_np = result.result_vertices   # numpy [N, V, 3] in cm
 
         identity_coeffs = mhr_params.get('identity_coeffs',
-                                         torch.zeros(batch_size, 45)).detach()
+                                         torch.zeros(batch_size, 45)).detach().cpu()
         face_expr_coeffs = mhr_params.get('face_expr_coeffs',
-                                          torch.zeros(batch_size, 72)).detach()
+                                          torch.zeros(batch_size, 72)).detach().cpu()
         lbs_model_params = mhr_params.get('lbs_model_params',
-                                          torch.zeros(batch_size, 204)).detach()
+                                          torch.zeros(batch_size, 204)).detach().cpu()
 
         # cm → m, matching tester.py convention
         vertices = torch.from_numpy(mhr_verts_np).float() / 100.0  # [N, V, 3]
