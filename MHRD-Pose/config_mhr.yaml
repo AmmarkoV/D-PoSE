@@ -15,7 +15,7 @@ DATASET:
   CROP_PROB: 0.0
   CROP_FACTOR: 0.0
   BATCH_SIZE: 64
-  NUM_WORKERS: 1
+  NUM_WORKERS: 6
   PIN_MEMORY: False
   SHUFFLE_TRAIN: True
   TRAIN_DS: 'all'
@@ -23,8 +23,8 @@ DATASET:
   IMG_RES: 224
   MESH_COLOR: 'pinkish'
   #FULLDATASETS_AND_RATIOS: 'agora-bfh_agora-body_static-hdri_zoom-suburbd_closeup-suburba_closeup-suburbb_closeup-suburbc_closeup-suburbd_closeup-gym_zoom-gym_static-gym_static-office_orbit-office_static-hdri-zoomed_pitchup-stadium_pitchdown-stadium_static-hdri-bmi_closeup-suburbb-bmi_closeup-suburbc-bmi_zoom-gym-bmi_static-office-hair_zoom-suburbd-hair_static-gym-hair_orbit-archviz-15_orbit-archviz-19_orbit-archviz-12_orbit-archviz-10'
-  DATASETS_AND_RATIOS: 'agora-bfh_agora-body_static-hdri_zoom-suburbd_closeup-suburba_closeup-suburbb_closeup-suburbc_closeup-suburbd_closeup-gym_zoom-gym_static-gym_static-office_orbit-office_static-hdri-zoomed_pitchup-stadium_pitchdown-stadium_static-hdri-bmi_closeup-suburbb-bmi_closeup-suburbc-bmi_zoom-gym-bmi_static-office-hair_zoom-suburbd-hair_static-gym-hair'
-  #DATASETS_AND_RATIOS: 'agora-bfh_agora-body'
+  #DATASETS_AND_RATIOS: 'agora-bfh_agora-body_static-hdri_zoom-suburbd_closeup-suburba_closeup-suburbb_closeup-suburbc_closeup-suburbd_closeup-gym_zoom-gym_static-gym_static-office_orbit-office_static-hdri-zoomed_pitchup-stadium_pitchdown-stadium_static-hdri-bmi_closeup-suburbb-bmi_closeup-suburbc-bmi_zoom-gym-bmi_static-office-hair_zoom-suburbd-hair_static-gym-hair'
+  DATASETS_AND_RATIOS: 'agora-bfh_agora-body'
   CROP_PERCENT: 0.8
   ALB: True
   ALB_PROB: 0.3
