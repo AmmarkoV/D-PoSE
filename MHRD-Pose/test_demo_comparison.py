@@ -12,6 +12,24 @@ SMPL+MHR optimization baseline) and flags the known failure modes:
   T5  rotation_tracks    Shoulder azimuth std > 5° across frames
   T6  vs_reference       Mean centered MPJPE < 200 mm vs original demo
                          (only runs when --ref-ckpt is supplied)
+  T7  elbow_angle_varies Elbow bend-angle std > 10° across frames
+  T8  pred_pose_varies   Raw pred_pose mean-std > 0.01 across frames
+  T9  vertices_upside    Top vertices near head joint, not feet
+  T10 joints2d_near_bbox  Model's 2D projected joints land near detection bbox
+                          (catches cam_t errors)
+  T11 side_by_side_diag  Prints cam_t and elbow angles side-by-side for
+                          MHRD vs reference models (diagnostic, not pass/fail)
+  T12 elbow_not_tpose    Mean elbow angle < 170° (catches frozen T-pose arms)
+  T13 depth_consistent   cam_t_z CV < 35% across frames (scale regressor quality)
+  T14 pelvis_on_person   Pelvis projected via cam_t lands within 35% of bbox
+                         (definitive mesh-displacement test)
+  T15 scale_plausible    Back-computed scale s = 2*fl/(bbox_h*cam_t_z) in [0.3,8]
+  T16 cache_plausible    (--cache-dir) MHR forward on cached params: body heights
+                         in [0.8, 2.5] m  → preconvert stage quality
+  T17 cache_diversity    (--cache-dir) lbs_model_params variance > 0.05
+                         → cached poses are not collapsed to T-pose
+  T18 cache_orient_varies (--cache-dir) root rotation std > 0.3
+                         → global orientation is actually being predicted
 
 Coordinate convention assumed for joints3d_smpl:
   Camera frame — X right, Y down, Z forward (into scene), units metres.
@@ -23,11 +41,25 @@ Usage (run from D-PoSE root):
         --input crazydance.mp4 \\
         --ckpt  MHRD-Pose/test.ckpt [--frames 20]
 
-    # With original model as reference (T6):
+    # With visual dumps (headless-safe — writes JPEGs, no display window):
     python MHRD-Pose/test_demo_comparison.py \\
         --input crazydance.mp4 \\
         --ckpt  MHRD-Pose/test.ckpt \\
-        --ref-ckpt data/ckpt/paper_arxiv.ckpt
+        --out-dir debug_diag/
+
+    # With cache checks (T16/T17/T18 — run after preconvert_mhr.sh):
+    python MHRD-Pose/test_demo_comparison.py \\
+        --input crazydance.mp4 \\
+        --ckpt  MHRD-Pose/test.ckpt \\
+        --cache-dir data/mhr_cache
+
+    # Full run — all checks including reference model (T6):
+    python MHRD-Pose/test_demo_comparison.py \\
+        --input crazydance.mp4 \\
+        --ckpt  MHRD-Pose/test.ckpt \\
+        --ref-ckpt data/ckpt/paper_arxiv.ckpt \\
+        --cache-dir data/mhr_cache \\
+        --out-dir debug_diag/
 """
 
 import os
@@ -242,6 +274,392 @@ def check_vertices_orientation(joints: np.ndarray,
     )
 
 
+def check_joints2d_near_bbox(joints2d: np.ndarray,
+                             dets: np.ndarray) -> CheckResult:
+    """T10: Projected 2D joints should land near the detected bounding box.
+
+    Catches cam_t errors — if the camera translation is wrong, the 3D joints
+    will project to the wrong 2D location in the image.
+
+    joints2d: [N, 22, 2] pixel coords (x, y)
+    dets:     [N, 5] — cx, cy, scale_px, _, score
+    """
+    if joints2d is None or len(joints2d) == 0:
+        return CheckResult('T10_joints2d_near_bbox', False,
+                           'joints2d not available from model output')
+
+    if len(dets) != len(joints2d):
+        return CheckResult('T10_joints2d_near_bbox', False,
+                           f'det/bbox count mismatch ({len(dets)} vs {len(joints2d)})')
+
+    ok_count = 0
+    for frame_j2d, det in zip(joints2d, dets):
+        cx, cy, scale_px = det[0], det[1], det[2]
+        # BBox half-dimensions in pixels, with 50% margin for pose extremes
+        hw = scale_px * 0.75
+        hh = scale_px * 0.55
+        x_min, x_max = cx - hw, cx + hw
+        y_min, y_max = cy - hh, cy + hh
+
+        # Check what fraction of joints land inside the padded bbox
+        inside_x = (frame_j2d[:, 0] >= x_min) & (frame_j2d[:, 0] <= x_max)
+        inside_y = (frame_j2d[:, 1] >= y_min) & (frame_j2d[:, 1] <= y_max)
+        frac_inside = float((inside_x & inside_y).mean())
+        if frac_inside >= 0.6:
+            ok_count += 1
+
+    frac_ok = ok_count / max(len(joints2d), 1)
+    return CheckResult(
+        name='T10_joints2d_near_bbox',
+        passed=frac_ok >= 0.80,
+        detail=f'{frac_ok*100:.1f}% of frames have ≥60% joints inside padded bbox (need ≥80%)',
+    )
+
+
+def check_elbow_not_tpose(joints: np.ndarray) -> CheckResult:
+    """T12: Mean elbow bend angle should be far from T-pose (~180°).
+
+    Catches the failure mode where arms are frozen in a T-pose (straight arms)
+    regardless of the actual pose in the video.
+
+    A T-pose has elbows straight (~180° bend). A natural walking/running pose
+    has bent elbows (typically 90°-150°).
+    """
+    for side in [(L_SHOULDER, L_ELBOW, L_WRIST), (R_SHOULDER, R_ELBOW, R_WRIST)]:
+        sh, el, wr = side
+        upper = joints[:, el, :] - joints[:, sh, :]   # [N, 3]
+        lower = joints[:, wr, :] - joints[:, el, :]   # [N, 3]
+        dot  = np.sum(upper * lower, axis=-1)
+        norm = (np.linalg.norm(upper, axis=-1) *
+                np.linalg.norm(lower, axis=-1) + 1e-8)
+        angles = np.arccos(np.clip(dot / norm, -1.0, 1.0))   # [N] radians
+        mean_deg = float(np.mean(angles)) * 180.0 / np.pi
+        if mean_deg < 170:
+            continue
+    mean_elbow = 0.0
+    for side in [(L_SHOULDER, L_ELBOW, L_WRIST), (R_SHOULDER, R_ELBOW, R_WRIST)]:
+        sh, el, wr = side
+        upper = joints[:, el, :] - joints[:, sh, :]
+        lower = joints[:, wr, :] - joints[:, el, :]
+        dot  = np.sum(upper * lower, axis=-1)
+        norm = (np.linalg.norm(upper, axis=-1) *
+                np.linalg.norm(lower, axis=-1) + 1e-8)
+        angles = np.arccos(np.clip(dot / norm, -1.0, 1.0))
+        mean_elbow += float(np.mean(angles)) * 180.0 / np.pi
+    mean_elbow /= 2.0
+
+    return CheckResult(
+        name='T12_elbow_not_tpose',
+        passed=mean_elbow < 170.0,
+        detail=f'Mean elbow angle = {mean_elbow:.1f}° (need <170°; ~180° → frozen T-pose)',
+    )
+
+
+def check_depth_consistent(cam_t: Optional[np.ndarray]) -> CheckResult:
+    """T13: cam_t_z (depth) coefficient of variation must be < 35%.
+
+    A well-trained model predicts consistent depth across frames for a static
+    scene.  If cam_t_z jumps from 3 m to 14 m the scale parameter is not
+    being predicted correctly — this makes the mesh appear at wildly different
+    sizes frame-to-frame.
+
+    CV = std / mean.  Threshold 0.35 is generous; original D-PoSE is ~0.10.
+    """
+    if cam_t is None or len(cam_t) < 3:
+        return CheckResult('T13_depth_consistent', False,
+                           'pred_cam_t not available — cannot assess depth consistency')
+    z = cam_t[:, 2]
+    mean_z = float(z.mean())
+    std_z  = float(z.std())
+    cv     = std_z / (abs(mean_z) + 1e-8)
+    return CheckResult(
+        name='T13_depth_consistent',
+        passed=cv < 0.35,
+        detail=(f'cam_t_z  mean={mean_z:.2f} m  std={std_z:.2f} m  CV={cv:.2f}'
+                f'  (need CV<0.35; large CV → model predicts inconsistent scale)'),
+    )
+
+
+def check_pelvis_projects_to_person(joints: np.ndarray, cam_t: np.ndarray,
+                                    dets: np.ndarray,
+                                    frame_w: int, frame_h: int) -> CheckResult:
+    """T14: Pelvis projected through cam_t must land near the detection bbox centre.
+
+    This is the definitive 'mesh is on the person' check. If it fails the
+    camera translation is wrong regardless of how the renderer uses it.
+    Failure here while T10 passes means the 2D joints are internally consistent
+    (cam_t + projection agree) but the absolute value of cam_t is wrong.
+
+    joints: [N, J, 3] body-local joints in metres (joints3d_smpl convention)
+    cam_t:  [N, 3] camera translation (metres)
+    dets:   [N, 5]  cx_px, cy_px, scale_px, _, score
+    """
+    fl = (frame_w**2 + frame_h**2) ** 0.5
+    ok = 0
+    errors_u, errors_v = [], []
+    for j, ct, det in zip(joints, cam_t, dets):
+        pelvis = j[PELVIS]
+        depth  = pelvis[2] + ct[2]
+        if depth <= 0:
+            continue
+        u = frame_w / 2 + fl * (pelvis[0] + ct[0]) / depth
+        v = frame_h / 2 + fl * (pelvis[1] + ct[1]) / depth
+        bbox_px = det[2]
+        eu, ev = abs(u - det[0]), abs(v - det[1])
+        errors_u.append(eu)
+        errors_v.append(ev)
+        if eu < 0.35 * bbox_px and ev < 0.35 * bbox_px:
+            ok += 1
+    n = max(len(joints), 1)
+    frac_ok = ok / n
+    mean_eu = float(np.mean(errors_u)) if errors_u else 0.0
+    mean_ev = float(np.mean(errors_v)) if errors_v else 0.0
+    return CheckResult(
+        name='T14_pelvis_on_person',
+        passed=frac_ok >= 0.70,
+        detail=(f'{frac_ok*100:.1f}% frames: pelvis projects within 35% of bbox '
+                f'(mean err u={mean_eu:.0f}px v={mean_ev:.0f}px; need ≥70%)'),
+    )
+
+
+def check_scale_plausibility(cam_t: np.ndarray, dets: np.ndarray,
+                              frame_w: int, frame_h: int) -> CheckResult:
+    """T15: Back-computed scale s = 2*fl/(bbox_h * cam_t_z) must be in [0.3, 8].
+
+    s is the raw scale output from the camera head.  Values outside [0.3, 8]
+    are physically impossible for a person-sized detection and indicate the
+    regressor is not learning the scale at all.
+
+    Complements T13 (depth CV): T13 catches frame-to-frame inconsistency,
+    T15 catches systematic bias (e.g. always predicting scale → 0).
+    """
+    fl = (frame_w**2 + frame_h**2) ** 0.5
+    scales = []
+    for ct, det in zip(cam_t, dets):
+        tz, bbox_h = ct[2], det[2]
+        if tz > 0 and bbox_h > 0:
+            scales.append(2 * fl / (bbox_h * tz))
+    if not scales:
+        return CheckResult('T15_scale_plausible', False, 'no valid frames to compute scale')
+    sc = np.array(scales)
+    frac_ok = float(np.mean((sc > 0.3) & (sc < 8.0)))
+    return CheckResult(
+        name='T15_scale_plausible',
+        passed=frac_ok >= 0.80,
+        detail=(f'back-computed s: mean={sc.mean():.2f} std={sc.std():.2f} '
+                f'range=[{sc.min():.2f},{sc.max():.2f}]; '
+                f'{frac_ok*100:.1f}% in [0.3,8] (need ≥80%)'),
+    )
+
+
+def run_cache_checks(cache_dir: str, cfg, device: torch.device,
+                     n_samples: int = 50) -> List[CheckResult]:
+    """Stage-1 pipeline checks: T16/T17/T18 on the pre-converted MHR cache.
+
+    T16 — body heights from MHR forward pass are in [0.8, 2.5] m
+    T17 — lbs_model_params have sufficient variance (not collapsed)
+    T18 — root rotation varies across samples (global orientation predicted)
+    """
+    import glob
+    npz_files = sorted(glob.glob(os.path.join(cache_dir, '*_mhr_params.npz')))
+    if not npz_files:
+        msg = f'No *_mhr_params.npz found in {cache_dir}'
+        return [CheckResult(n, False, msg)
+                for n in ('T16_cache_plausible', 'T17_cache_diversity',
+                          'T18_cache_global_orient_varies')]
+
+    npz_path = npz_files[0]
+    print(f'  Cache file: {os.path.basename(npz_path)}')
+    data    = np.load(npz_path)
+    identity   = data['identity_coeffs']    # [N, 45]
+    lbs_params = data['lbs_model_params']   # [N, 204]
+    face_expr  = data.get('face_expr_coeffs', None)
+    n_total    = len(identity)
+    print(f'  Cache samples: {n_total}')
+
+    # T17: diversity — no MHR model needed
+    lbs_std = float(lbs_params.std(axis=0).mean())
+    t17 = CheckResult(
+        name='T17_cache_diversity',
+        passed=lbs_std > 0.05,
+        detail=(f'lbs_model_params mean-std={lbs_std:.4f} over {n_total} samples '
+                f'(need >0.05; low → collapsed to single pose)'),
+    )
+
+    # T18: root rotation variance
+    root_rot_std = float(lbs_params[:, :3].std(axis=0).mean())
+    t18 = CheckResult(
+        name='T18_cache_global_orient_varies',
+        passed=root_rot_std > 0.3,
+        detail=(f'root rotation (lbs[:3]) std={root_rot_std:.3f} '
+                f'(need >0.3; low → global orientation frozen — camera space wrong)'),
+    )
+
+    # T16: body height — needs MHR forward pass
+    mhr_model_path = os.path.join(_ROOT, cfg.MHR.MODEL_PT)
+    try:
+        mhr_model = torch.load(mhr_model_path, map_location='cpu', weights_only=False)
+        mhr_model.eval().to(device)
+    except Exception as e:
+        t16 = CheckResult('T16_cache_plausible', False, f'Cannot load MHR model: {e}')
+        return [t16, t17, t18]
+
+    indices = np.random.choice(n_total, size=min(n_samples, n_total), replace=False)
+    heights = []
+    with torch.no_grad():
+        for i in indices:
+            id_t  = torch.from_numpy(identity[i:i+1]).float().to(device)
+            lbs_t = torch.from_numpy(lbs_params[i:i+1]).float().to(device)
+            expr_t = (torch.from_numpy(face_expr[i:i+1]).float().to(device)
+                      if face_expr is not None
+                      else torch.zeros(1, 72, device=device))
+            try:
+                verts_cm, _ = mhr_model(identity_coeffs=id_t,
+                                        model_parameters=lbs_t,
+                                        face_expr_coeffs=expr_t,
+                                        apply_correctives=True)
+                verts_m = verts_cm[0].cpu().numpy() * 0.01
+                heights.append(verts_m[:, 1].max() - verts_m[:, 1].min())
+            except Exception:
+                pass
+
+    if not heights:
+        t16 = CheckResult('T16_cache_plausible', False, 'MHR forward failed on all samples')
+    else:
+        h = np.array(heights)
+        frac_ok = float(np.mean((h > 0.8) & (h < 2.5)))
+        t16 = CheckResult(
+            name='T16_cache_plausible',
+            passed=frac_ok >= 0.80,
+            detail=(f'body height: mean={h.mean():.2f}m std={h.std():.2f}m '
+                    f'range=[{h.min():.2f},{h.max():.2f}]; '
+                    f'{frac_ok*100:.1f}% in [0.8,2.5]m (need ≥80%)'),
+        )
+    return [t16, t17, t18]
+
+
+def dump_frame_diagnostics(out_dir: str, frames: list, joints: np.ndarray,
+                           cam_t: np.ndarray, dets: np.ndarray,
+                           j2d: Optional[np.ndarray] = None) -> None:
+    """Save per-frame debug images with bbox, joints2d, and projected pelvis.
+
+    All output is written to files — no display window is opened.
+    Headless-safe (only uses cv2.imwrite, no cv2.imshow).
+
+    Annotations:
+      Green rectangle  — detection bbox
+      Blue dots        — predicted joints2d_smpl (if available)
+      Magenta dot      — projected pelvis via cam_t
+      Green ring       — bbox centre
+      Yellow line      — error vector from bbox centre to projected pelvis
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    H, W = frames[0].shape[:2]
+    fl   = (W**2 + H**2) ** 0.5
+
+    saved = 0
+    for i, (frame, j, ct, det) in enumerate(zip(frames, joints, cam_t, dets)):
+        vis = frame.copy()   # RGB uint8
+
+        cx_px   = float(det[0])
+        cy_px   = float(det[1])
+        bbox_px = float(det[2])
+
+        # Detection bbox (green)
+        half = bbox_px / 2
+        cv2.rectangle(vis,
+                      (int(cx_px - half), int(cy_px - half)),
+                      (int(cx_px + half), int(cy_px + half)),
+                      (0, 255, 0), 2)
+
+        # Predicted joints2d (blue dots)
+        if j2d is not None and i < len(j2d):
+            for jx, jy in j2d[i]:
+                cv2.circle(vis, (int(jx), int(jy)), 3, (0, 100, 255), -1)
+
+        # Projected pelvis via cam_t (magenta) and error line (yellow)
+        pelvis = j[PELVIS]
+        depth  = pelvis[2] + ct[2]
+        if depth > 0:
+            u = W / 2 + fl * (pelvis[0] + ct[0]) / depth
+            v = H / 2 + fl * (pelvis[1] + ct[1]) / depth
+            cv2.circle(vis, (int(cx_px), int(cy_px)), 8, (0, 255, 0), 2)
+            cv2.circle(vis, (int(u), int(v)), 8, (255, 0, 255), -1)
+            cv2.line(vis, (int(cx_px), int(cy_px)), (int(u), int(v)), (255, 255, 0), 2)
+            err = ((u - cx_px)**2 + (v - cy_px)**2) ** 0.5
+            cv2.putText(vis, f'pelvis err={err:.0f}px',
+                        (10, H - 50), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 0), 2)
+
+        # cam_t annotation
+        cv2.putText(vis,
+                    f'cam_t=[{ct[0]:+.2f},{ct[1]:+.2f},{ct[2]:+.2f}] m',
+                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2)
+
+        out_path = os.path.join(out_dir, f'frame_{i:03d}.jpg')
+        cv2.imwrite(out_path, cv2.cvtColor(vis, cv2.COLOR_RGB2BGR))
+        saved += 1
+
+    print(f'  Saved {saved} diagnostic frames → {out_dir}/')
+
+
+def print_side_by_side_diag(mhrd_cam_t, mhrd_joints,
+                            ref_cam_t=None, ref_joints=None):
+    """T11 enhanced: side-by-side cam_t and arm angle diagnostics.
+
+    Prints camera translation and per-frame elbow angles for whichever
+    models are available.
+    """
+    print('\nSide-by-side diagnostics:')
+    header = f'{"Frame":>6s}'
+    if mhrd_cam_t is not None:
+        header += '  ' + 'MHRD cam_t'.center(22) + '  ' + 'MHRD elbow_avg'.center(14)
+    if ref_cam_t is not None and ref_joints is not None:
+        header += '  ' + 'Ref cam_t'.center(22) + '  ' + 'Ref elbow_avg'.center(14)
+    print(header)
+
+    n = 0
+    if mhrd_joints is not None:
+        n = max(n, len(mhrd_joints))
+    if ref_joints is not None:
+        n = max(n, len(ref_joints))
+
+    for i in range(n):
+        row = f'{i:6d}'
+        if mhrd_cam_t is not None and i < len(mhrd_cam_t):
+            ct = mhrd_cam_t[i]
+            row += f'  [{ct[0]:+7.2f}, {ct[1]:+7.2f}, {ct[2]:+7.2f}]'
+            # Compute avg elbow angle for this frame
+            angles = []
+            for sh, el, wr in [(L_SHOULDER, L_ELBOW, L_WRIST),
+                               (R_SHOULDER, R_ELBOW, R_WRIST)]:
+                upper = mhrd_joints[i, el] - mhrd_joints[i, sh]
+                lower = mhrd_joints[i, wr] - mhrd_joints[i, el]
+                dot = np.dot(upper, lower)
+                nm = np.linalg.norm(upper) * np.linalg.norm(lower) + 1e-8
+                ang = np.arccos(np.clip(dot / nm, -1, 1)) * 180 / np.pi
+                angles.append(ang)
+            avg_elbow = float(np.mean(angles))
+            row += f'  {avg_elbow:11.1f}°'
+        else:
+            if mhrd_cam_t is not None:
+                row += '  ' + ' ' * 22 + '  ' + ' ' * 14
+        if ref_cam_t is not None and ref_joints is not None and i < len(ref_cam_t):
+            ct = ref_cam_t[i]
+            row += f'  [{ct[0]:+7.2f}, {ct[1]:+7.2f}, {ct[2]:+7.2f}]'
+            angles = []
+            for sh, el, wr in [(L_SHOULDER, L_ELBOW, L_WRIST),
+                               (R_SHOULDER, R_ELBOW, R_WRIST)]:
+                upper = ref_joints[i, el] - ref_joints[i, sh]
+                lower = ref_joints[i, wr] - ref_joints[i, el]
+                dot = np.dot(upper, lower)
+                nm = np.linalg.norm(upper) * np.linalg.norm(lower) + 1e-8
+                ang = np.arccos(np.clip(dot / nm, -1, 1)) * 180 / np.pi
+                angles.append(ang)
+            avg_elbow = float(np.mean(angles))
+            row += f'  {avg_elbow:11.1f}°'
+        print(row)
+
+
 def check_vs_reference(mhrd_joints: np.ndarray,
                        ref_joints:  np.ndarray) -> CheckResult:
     """T6: Pelvis-centred MPJPE < 200 mm vs original SMPL demo output.
@@ -327,11 +745,13 @@ class MHRDInference:
 
     @torch.no_grad()
     def infer(self, frame_rgb: np.ndarray,
-              dets: np.ndarray) -> Optional[np.ndarray]:
-        """
+              dets: np.ndarray):
+        """Run MHRD inference on a single frame.
+
         frame_rgb: HxWx3 uint8 RGB
         dets:      [M, 5] — cx, cy, scale_px, unused, score  (MPT format)
-        Returns:   [M, 22, 3] joints3d_smpl in metres, or None if no detections.
+        Returns: tuple of (joints3d, pred_pose, vertices, joints2d, pred_cam_t)
+                 each [M, ...] or None, or None overall if no detections.
         """
         from train.utils.image_utils import crop
 
@@ -371,11 +791,16 @@ class MHRDInference:
         if j is None:
             return None
 
-        p = out.get('pred_pose')   # [B, D] LBS params; None if key absent
-        v = out.get('vertices')    # [B, V, 3] mesh vertices; None if absent
+        p   = out.get('pred_pose')       # [B, D] LBS params
+        v   = out.get('vertices')        # [B, V, 3] mesh vertices
+        j2d = out.get('joints2d_smpl')   # [B, 24, 2] SMPL-ordered pixel coords
+        ct  = out.get('pred_cam_t')      # [B, 3] full perspective cam translation
+
         return (j.detach().cpu().numpy(),
                 p.detach().cpu().numpy() if p is not None else None,
-                v.detach().cpu().numpy() if v is not None else None)
+                v.detach().cpu().numpy() if v is not None else None,
+                j2d.detach().cpu().numpy() if j2d is not None else None,
+                ct.detach().cpu().numpy() if ct is not None else None)
 
 
 # ─── Original (SMPL+MHR optimization) reference wrapper ──────────────────────
@@ -406,8 +831,9 @@ class OriginalInference:
         self.tester = Tester(args)
 
     def infer(self, frame_rgb: np.ndarray,
-              dets: np.ndarray) -> Optional[np.ndarray]:
-        """Returns [M, 22, 3] joints in metres (converted from cm)."""
+              dets: np.ndarray):
+        """Returns (joints_m, pred_cam_t) — joints [M, 22, 3] in metres,
+        pred_cam_t [M, 3] or None."""
         if len(dets) == 0:
             return None
         result = self.tester.run_on_single_image_tensor(frame_rgb, [dets])
@@ -421,7 +847,11 @@ class OriginalInference:
         # Extract XYZ translation: column 12-14 in column-major 4×4
         trans_cm = skel[:, :, 12:15]          # [B, 127, 3]
         joints_m = trans_cm[:, self.smpl_idx, :] / 100.0  # cm → m, [B, 22, 3]
-        return joints_m
+
+        ct = result.get('pred_cam_t')
+        if ct is not None and isinstance(ct, torch.Tensor):
+            ct = ct.detach().cpu().numpy()
+        return (joints_m, ct)
 
 
 # ─── Detection helper ─────────────────────────────────────────────────────────
@@ -480,28 +910,41 @@ def run_tests(args) -> int:
     print(f'\nLoading MHRD model ({args.ckpt or "random weights"}) …')
     mhrd = MHRDInference(args.ckpt, args.cfg, device)
 
-    mhrd_joints_all = []
-    mhrd_poses_all  = []
-    mhrd_verts_all  = []
+    mhrd_joints_all   = []
+    mhrd_poses_all    = []
+    mhrd_verts_all    = []
+    mhrd_j2d_all      = []
+    mhrd_camt_all     = []
+    mhrd_dets_all     = []
+    mhrd_frames_all   = []   # raw frames aligned with the above (for visual dump)
     for frame, dets in zip(frames, dets_list):
         result = mhrd.infer(frame, dets)
         if result is None:
             continue
-        j, p, v = result
+        j, p, v, j2d, ct = result
         if j is not None and len(j) > 0:
             mhrd_joints_all.append(j[0])
             if p is not None:
                 mhrd_poses_all.append(p[0])
             if v is not None:
                 mhrd_verts_all.append(v[0])
+            if j2d is not None:
+                mhrd_j2d_all.append(j2d[0])
+            if ct is not None:
+                mhrd_camt_all.append(ct[0])
+            mhrd_dets_all.append(dets[0])
+            mhrd_frames_all.append(frame)
 
     if len(mhrd_joints_all) < 3:
         print('ERROR: MHRD model produced too few joint outputs — aborting')
         return 2
 
-    mhrd_joints = np.stack(mhrd_joints_all)   # [N, J, 3]
-    mhrd_poses  = np.stack(mhrd_poses_all) if mhrd_poses_all else None  # [N, D]
-    mhrd_verts  = np.stack(mhrd_verts_all)  if mhrd_verts_all  else None  # [N, V, 3]
+    mhrd_joints  = np.stack(mhrd_joints_all)   # [N, J, 3]
+    mhrd_poses   = np.stack(mhrd_poses_all) if mhrd_poses_all else None
+    mhrd_verts   = np.stack(mhrd_verts_all)  if mhrd_verts_all  else None
+    mhrd_j2d     = np.stack(mhrd_j2d_all)    if mhrd_j2d_all    else None
+    mhrd_camt    = np.stack(mhrd_camt_all)   if mhrd_camt_all   else None
+    mhrd_dets    = np.stack(mhrd_dets_all)   if mhrd_dets_all   else None
     print(f'  Collected {len(mhrd_joints)} MHRD joint frames, '
           f'shape {mhrd_joints.shape}, '
           f'range [{mhrd_joints.min():.3f}, {mhrd_joints.max():.3f}] m')
@@ -511,22 +954,34 @@ def run_tests(args) -> int:
 
     # ── 4. Reference inference (optional) ────────────────────────────────────
     ref_joints = None
+    ref_camt   = None
     if args.ref_ckpt:
         print(f'\nLoading original reference model ({args.ref_ckpt}) …')
         try:
             orig = OriginalInference(args.ref_ckpt, device)
-            ref_all = []
+            ref_j_all  = []
+            ref_ct_all = []
             for frame, dets in zip(frames, dets_list):
-                j = orig.infer(frame, dets)
+                result = orig.infer(frame, dets)
+                if result is None:
+                    continue
+                j, ct = result
                 if j is not None and len(j) > 0:
-                    ref_all.append(j[0])
-            if ref_all:
-                ref_joints = np.stack(ref_all)
+                    ref_j_all.append(j[0])
+                    if ct is not None:
+                        ref_ct_all.append(ct[0])
+            if ref_j_all:
+                ref_joints = np.stack(ref_j_all)
+                ref_camt   = np.stack(ref_ct_all) if ref_ct_all else None
                 print(f'  Collected {len(ref_joints)} reference joint frames')
             else:
                 print('  WARNING: reference model produced no output — T6 skipped')
+                ref_joints = None
+                ref_camt   = None
         except Exception as e:
             print(f'  WARNING: could not load reference model ({e}) — T6 skipped')
+            ref_joints = None
+            ref_camt   = None
 
     # ── 5. Run checks ─────────────────────────────────────────────────────────
     print('\n' + '─' * 72)
@@ -541,13 +996,33 @@ def run_tests(args) -> int:
         check_rotation_tracks(mhrd_joints),
         check_elbow_angle_varies(mhrd_joints),
         check_pred_pose_varies(mhrd_poses),
+        check_elbow_not_tpose(mhrd_joints),
     ]
+    if mhrd_j2d is not None and mhrd_dets is not None:
+        n_j2d = min(len(mhrd_j2d), len(mhrd_dets))
+        results.append(check_joints2d_near_bbox(mhrd_j2d[:n_j2d], mhrd_dets[:n_j2d]))
+    else:
+        results.append(CheckResult('T10_joints2d_near_bbox', False,
+                                   'joints2d/dets not available from model output'))
     if mhrd_verts is not None:
         n_v = min(len(mhrd_joints), len(mhrd_verts))
         results.append(check_vertices_orientation(mhrd_joints[:n_v], mhrd_verts[:n_v]))
     else:
         results.append(CheckResult('T9_vertices_not_upside_down', False,
                                    'vertices not in model output — check output keys'))
+    results.append(check_depth_consistent(mhrd_camt))
+    # T14/T15 — inference-level cam_t quality checks
+    if mhrd_camt is not None and mhrd_dets is not None:
+        fh, fw = frames[0].shape[:2]
+        n_ct = min(len(mhrd_joints), len(mhrd_camt), len(mhrd_dets))
+        results.append(check_pelvis_projects_to_person(
+            mhrd_joints[:n_ct], mhrd_camt[:n_ct], mhrd_dets[:n_ct], fw, fh))
+        results.append(check_scale_plausibility(
+            mhrd_camt[:n_ct], mhrd_dets[:n_ct], fw, fh))
+    else:
+        for name in ('T14_pelvis_on_person', 'T15_scale_plausible'):
+            results.append(CheckResult(name, False,
+                                       'pred_cam_t or dets not available'))
     if ref_joints is not None:
         n_common = min(len(mhrd_joints), len(ref_joints))
         results.append(check_vs_reference(mhrd_joints[:n_common],
@@ -556,7 +1031,12 @@ def run_tests(args) -> int:
     for r in results:
         print(r)
 
-    # ── 6. Diagnostic dump ────────────────────────────────────────────────────
+    # ── 6. Side-by-side diagnostics (T11 enhanced) ────────────────────────────
+    print()
+    print_side_by_side_diag(mhrd_camt, mhrd_joints,
+                            ref_camt, ref_joints)
+
+    # ── 7. Diagnostic dump ────────────────────────────────────────────────────
     print('\nDiagnostics (first frame, first person):')
     j0 = mhrd_joints[0]
     print(f'  pelvis      : {j0[PELVIS]}')
@@ -573,7 +1053,33 @@ def run_tests(args) -> int:
     print(f'  head Y < pelvis Y: {head_above}  '
           f'(True → right-side-up, False → upside down)')
 
-    # ── 7. Summary ────────────────────────────────────────────────────────────
+    # ── 8. Cache checks (T16/T17/T18) ────────────────────────────────────────
+    if args.cache_dir:
+        print('\n' + '─' * 72)
+        print('Cache checks (preconvert stage)')
+        print('─' * 72)
+        from train.core.config import update_hparams
+        cfg_for_cache = update_hparams(args.cfg)
+        cache_results = run_cache_checks(args.cache_dir, cfg_for_cache, device)
+        for r in cache_results:
+            print(r)
+        results.extend(cache_results)
+
+    # ── 9. Visual frame dump (headless-safe) ─────────────────────────────────
+    if args.out_dir and mhrd_camt is not None and mhrd_dets is not None:
+        print(f'\nSaving diagnostic frames → {args.out_dir}/')
+        n_dump = min(len(mhrd_frames_all), len(mhrd_joints),
+                     len(mhrd_camt), len(mhrd_dets))
+        dump_frame_diagnostics(
+            args.out_dir,
+            mhrd_frames_all[:n_dump],
+            mhrd_joints[:n_dump],
+            mhrd_camt[:n_dump],
+            mhrd_dets[:n_dump],
+            j2d=mhrd_j2d[:n_dump] if mhrd_j2d is not None else None,
+        )
+
+    # ── 10. Summary ───────────────────────────────────────────────────────────
     print('\n' + '─' * 72)
     n_pass = sum(r.passed for r in results)
     n_total = len(results)
@@ -604,6 +1110,12 @@ if __name__ == '__main__':
                         help='Original demo checkpoint for T6 reference comparison')
     parser.add_argument('--frames', type=int, default=20,
                         help='Number of frames to sample from the video (default: 20)')
+    parser.add_argument('--out-dir', default=None, dest='out_dir',
+                        help='Directory for per-frame diagnostic images (headless-safe). '
+                             'Omit to skip image output.')
+    parser.add_argument('--cache-dir', default=None, dest='cache_dir',
+                        help='Path to preconvert MHR cache directory (runs T16/T17/T18). '
+                             'E.g. data/mhr_cache')
     args = parser.parse_args()
 
     sys.exit(run_tests(args))

@@ -187,21 +187,8 @@ class MHRTester:
                     faces = faces.cpu().numpy()
                 else:
                     faces = np.array(faces)
-            renderer = Renderer(focal_length=1468.6047, img_w=1280, img_h=720,
-                                faces=faces, same_mesh_color=False)
-            # MHR model outputs vertices in Y-down camera frame (head at -Y).
-            # renderer_pyrd uses a 180°-X rotation designed for Y-up SMPL vertices.
-            # That rotation flips head from -Y to +Y, which renders at the bottom
-            # of the pyrender output (upside down). Override with 180° around Y:
-            # this flips Z (keeping mesh in front of pyrender camera) without
-            # touching Y, so head stays at -Y and renders at the top of the image.
-            renderer.rot = np.array([
-                [-1., 0., 0., 0.],
-                [ 0., 1., 0., 0.],
-                [ 0., 0.,-1., 0.],
-                [ 0., 0., 0., 1.],
-            ])
-            return renderer
+            return Renderer(focal_length=1468.6047, img_w=1280, img_h=720,
+                            faces=faces, same_mesh_color=False)
         except Exception as e:
             logger.warning(f'Could not build renderer: {e} — display disabled')
             return None
@@ -255,6 +242,13 @@ class MHRTester:
             vertices = (mhr_output['vertices'] + mhr_output['pred_cam_t'].unsqueeze(1))
             if isinstance(vertices, torch.Tensor):
                 vertices = vertices.detach().cpu().numpy()
+            # MHR outputs in Y-down camera frame (head at negative Y).
+            # renderer_pyrd expects Y-up (SMPL convention). Negate Y here so the
+            # renderer's built-in 180°-X rotation correctly flips only Z
+            # (puts mesh in front of the pyrender camera) without disturbing X
+            # (horizontal position) or the final Y orientation seen on screen.
+            vertices = vertices.copy()
+            vertices[:, :, 1] *= -1
             front_view = self.renderer.render_front_view(vertices, bg_img_rgb=img.copy())
             cv2.imshow('front', front_view[:, :, ::-1])
             if save is not None:
