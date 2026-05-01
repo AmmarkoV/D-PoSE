@@ -225,22 +225,18 @@ class DatasetHMR(OriginalDatasetHMR):
         # and used them directly in get_vertices() for GT mesh generation.
         # Here we load SMPLX + MHR + Conversion objects specifically for
         # the SMPL→MHR conversion pipeline.
-        """Initialize SMPL→MHR converter.
-
-        This sets up the Conversion class for on-the-fly conversion.
-        Called when cache is not available.
-        """
+        #
+        # Pattern mirrors train/core/tester.py:Tester._convert_smplx_output_to_mhr —
+        # the known-good working reference for MHR conversion.
+        """Initialize SMPL→MHR converter."""
         try:
             import smplx
             import sys
             import os
+
             sys.path.append('MHR/')
-            cwd = os.getcwd()
-            print("Working Directory is ",
-                  cwd)  # Working Directory is  /home/user/workspace
             from mhr.mhr import MHR
 
-            # conversion.py uses local-relative imports so its directory must be on path
             import sys as _sys, os as _os
             _proj_root = _os.path.dirname(
                 _os.path.dirname(_os.path.abspath(__file__)))
@@ -250,8 +246,7 @@ class DatasetHMR(OriginalDatasetHMR):
                 _sys.path.insert(0, _conv_dir)
             from conversion import Conversion
 
-            # Use CPU for the converter — it runs in DataLoader workers and
-            # should not compete with the training model for GPU memory.
+            # Converter runs in DataLoader workers — keep on CPU.
             self.device = torch.device('cpu')
 
             # Load SMPLX model
@@ -262,17 +257,12 @@ class DatasetHMR(OriginalDatasetHMR):
                 use_pca=False,
                 flat_hand_mean=True,
                 dtype=torch.float32,
-            ).cpu(
-            )  # explicit .cpu() — must not go to CUDA, runs in DataLoader workers
+            ).cpu()
 
-            # Create MHR Python instance — Conversion needs .character attribute
-            # access which TorchScript RecursiveScriptModule does not expose.
-            # MHR.from_files() returns a proper Python nn.Module with .character.
+            # Load MHR Python instance for Conversion (needs .character attribute).
             from config import MHR_MODEL_DIR, MHR_LOD
-            import os as _os2
             from pathlib import Path as _Path
-            _proj_root2 = _os2.path.dirname(
-                _os2.path.dirname(_os2.path.abspath(__file__)))
+            _proj_root2 = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
             _assets_path = _Path(_proj_root2) / MHR_MODEL_DIR
             self.mhr_instance = MHR.from_files(
                 folder=_assets_path,
@@ -280,13 +270,22 @@ class DatasetHMR(OriginalDatasetHMR):
                 lod=MHR_LOD,
             )
 
-            # Create converter
+            # Load the pre-compiled MHR model for the forward pass.
+            # Matches the pattern in MHRD-Pose/demo_webcam.py and
+            # train/core/tester.py._convert_smplx_output_to_mhr.
+            from config import MHR_MODEL_PT
+            _mhr_pt_path = _os.path.join(_proj_root2, MHR_MODEL_PT)
+            self.mhr_model = torch.load(
+                _mhr_pt_path, map_location='cpu', weights_only=False)
+            self.mhr_model.eval()
+
+            # Create converter using Python instance (needs .character for fitting).
             self.converter = Conversion(mhr_model=self.mhr_instance,
                                         smpl_model=self.smplx_model,
                                         method="pytorch",
                                         batch_size=64)
 
-            logger.info("SMPL→MHR converter initialized")
+            logger.info("SMPL→MHR converter initialized (mhr_model=%s)", _mhr_pt_path)
 
         except ImportError as e:
             logger.error(f"Failed to import conversion modules: {e}")
@@ -329,26 +328,19 @@ class DatasetHMR(OriginalDatasetHMR):
         # pin it back to CPU before every forward pass.
         self.smplx_model = self.smplx_model.cpu()
 
-        # Generate SMPLX mesh — converter is always on CPU.
-        # All optional pose/expression parameters must be passed explicitly for
-        # batch sizes > 1 because smplx registers defaults as batch-1 buffers
-        # that do not broadcast automatically.
-        # Keep camera-space global_orient from pose_cam (first 3 values).
-        # pose_cam encodes the body's orientation relative to the camera
-        # (OpenCV Y-down convention), which is learnable from the image.
-        # Zero only transl — absolute 3D placement is unlearnable from a crop
-        # and is handled separately by the camera head (scale, tx, ty).
-        # Using zero global_orient would put the body in Y-up canonical space,
-        # breaking the 2D reprojection loss (v = fy*py/tz+cy projects head
-        # above the pelvis only when py < 0, i.e. Y-down) and flipping the
-        # rendered mesh upside-down.
+        # Generate SMPL-X mesh in camera space.
+        # transl=trans_cam places the body at its actual camera-space depth so
+        # the converter receives camera-placed vertices — matching the approach
+        # in train/core/tester.py._convert_smplx_output_to_mhr (the known-good
+        # reference).  Using transl=0 would put the body at origin, causing the
+        # converter to fit MHR at origin; the resulting lbs_model_params[0:3]
+        # (MHR global translation) would then differ from the camera-space depth
+        # that the inference model expects, introducing a systematic ty offset.
         smplx_output = self.smplx_model(
-            betas=smpl_data['betas'].cpu()
-            [:, :10],  # dataset pads to 11; smplx expects 10
+            betas=smpl_data['betas'].cpu()[:, :10],  # dataset pads to 11
             body_pose=smpl_data['pose'][:, 3:66].cpu(),  # 21 joints × 3
-            global_orient=smpl_data['pose']
-            [:, :3].cpu(),  # camera-space body orientation
-            transl=torch.zeros(batch_size, 3),
+            global_orient=smpl_data['pose'][:, :3].cpu(),
+            transl=smpl_data['transl'].cpu(),  # camera-space translation
             jaw_pose=torch.zeros(batch_size, 3),
             leye_pose=torch.zeros(batch_size, 3),
             reye_pose=torch.zeros(batch_size, 3),
@@ -357,59 +349,44 @@ class DatasetHMR(OriginalDatasetHMR):
             expression=torch.zeros(batch_size, 10),
         )
 
-        smpl_vertices = smplx_output.vertices  # [N, 10475, 3]
+        smpl_vertices = smplx_output.vertices  # [N, 10475, 3] in camera space
 
-        # Convert to MHR.
-        # torch.enable_grad() is required because pytorch_fitting.py runs a
-        # gradient-based optimisation internally (loss.backward()).  PL wraps
-        # the validation/eval loop in torch.no_grad(), which disables the grad
-        # tape and makes loss.backward() raise "does not require grad".
-        # torch.enable_grad() is required: pytorch_fitting.py runs gradient-based
-        # optimisation internally; PL wraps eval loops in torch.no_grad() which
-        # kills the grad tape and makes loss.backward() raise "does not require grad".
+        # Convert to MHR.  torch.enable_grad() is required because
+        # pytorch_fitting.py runs gradient-based optimisation internally.
         with torch.enable_grad():
             result = self.converter.convert_smpl2mhr(
                 smpl_vertices=smpl_vertices,
+                smpl_parameters=None,
                 single_identity=False,
+                exclude_expression=False,
                 is_tracking=False,
                 return_mhr_parameters=True,
-                return_mhr_vertices=True,  # numpy [N, V, 3] in cm
+                return_mhr_vertices=True,
                 return_mhr_meshes=False,
+                return_fitting_errors=False,
             )
 
         mhr_params = result.result_parameters  # dict of tensors
-        mhr_verts_np = result.result_vertices  # numpy [N, V, 3] in cm
+        mhr_verts_np = result.result_vertices   # numpy [N, V, 3] in cm
 
-        # Extract parameter tensors
         identity_coeffs = mhr_params.get('identity_coeffs',
-                                         torch.zeros(batch_size, 45))
+                                         torch.zeros(batch_size, 45)).detach()
         face_expr_coeffs = mhr_params.get('face_expr_coeffs',
-                                          torch.zeros(batch_size, 72))
+                                          torch.zeros(batch_size, 72)).detach()
         lbs_model_params = mhr_params.get('lbs_model_params',
-                                          torch.zeros(batch_size, 204))
+                                          torch.zeros(batch_size, 204)).detach()
 
-        # Detach params — they were produced inside an enable_grad context but we
-        # only need the values for caching / GT supervision, not for backprop here.
-        identity_coeffs = identity_coeffs.detach()
-        face_expr_coeffs = face_expr_coeffs.detach()
-        lbs_model_params = lbs_model_params.detach()
+        # cm → m, matching tester.py convention
+        vertices = torch.from_numpy(mhr_verts_np).float() / 100.0  # [N, V, 3]
 
-        # Convert vertices from cm → m
-        vertices = torch.from_numpy(mhr_verts_np).float() * 0.01  # [N, V, 3]
-
-        # Obtain joint positions via MHR forward → skel_state.
-        # The skel_state format depends on whether MHR.from_files() returns
-        # 8-element [tx, ty, tz, qw, qx, qy, qz, 1] or 16-element column-major
-        # 4×4 transforms. We detect the format at runtime.
+        # MHR forward for skel_state → joint positions.
+        # Uses self.mhr_model (loaded from assets/mhr_model.pt) to match the
+        # inference path in MHRD-Pose/demo_webcam.py and mhr_head.py.
         with torch.no_grad():
-            # apply_correctives=True to match mhr_head.py's training-time forward.
-            # Using False here would produce joints from a slightly different
-            # mesh than what the network is regressing against.
-            _, skel_state = self.mhr_instance(
+            _, skel_state = self.mhr_model(
                 identity_coeffs=identity_coeffs.float(),
                 model_parameters=lbs_model_params.float(),
                 face_expr_coeffs=face_expr_coeffs.float(),
-                apply_correctives=True,
             )
         joints3d = _extract_joints_from_skel_state(skel_state)
 
@@ -450,9 +427,17 @@ class DatasetHMR(OriginalDatasetHMR):
         item = super().__getitem__(index)
 
         # Get SMPL parameters for this sample
-        smpl_pose = item['pose']  # [165]
+        smpl_pose = item['pose']    # [165]
         smpl_betas = item['betas']  # [10]
-        smpl_transl = item.get('transl', torch.zeros(3))  # [3]
+        # Use camera-space translation if the dataset provides it.
+        # The original __getitem__ doesn't put 'transl' in item; 'translation'
+        # is cam_ext[:,3] + trans_cam which is not what we want.  Read
+        # self.trans_cam[index] directly (set by super().__init__ when the npz
+        # has a 'trans_cam' array).
+        if hasattr(self, 'trans_cam'):
+            smpl_transl = torch.tensor(self.trans_cam[index].copy()).float()
+        else:
+            smpl_transl = torch.zeros(3)
 
         # Check cache
         if self.mhr_params_cached is not None:
@@ -573,7 +558,10 @@ def preconvert_dataset(options, dataset_name, output_path):
         smpl_data = {
             'pose': item['pose'].unsqueeze(0),
             'betas': item['betas'].unsqueeze(0),
-            'transl': item.get('transl', torch.zeros(3)).unsqueeze(0),
+            'transl': (
+                torch.tensor(ds.trans_cam[i].copy()).float()
+                if hasattr(ds, 'trans_cam') else torch.zeros(3)
+            ).unsqueeze(0),
         }
 
         # Convert
