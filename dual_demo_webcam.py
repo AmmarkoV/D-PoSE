@@ -166,54 +166,21 @@ def _to_numpy(x):
 
 
 def overlay_joints_from_dpose(frame_bgr, dpose_output):
-    """Extract SMPL-mapped joints from D-PoSE mhr_skel_state and draw them."""
-    if dpose_output is None:
+    """Draw D-PoSE joints via the shared extract_joints2d_dpose path."""
+    j2d = extract_joints2d_dpose(dpose_output)
+    if j2d is None:
         return frame_bgr
-    skel = dpose_output.get('mhr_skel_state')
-    if skel is None:
-        return frame_bgr
-    skel = _to_numpy(skel)
-    if skel.ndim == 2:
-        skel = skel[np.newaxis]   # [1, 127, 8]
-    for b in range(len(skel)):
-        joints_cm = skel[b][MHR_TO_SMPL_JOINT_INDICES, :3]   # [24, 3] cm, Y-up
-        joints_m  = joints_cm * 0.01
-        joints2d  = project_yup_joints(joints_m)
-        frame_bgr = draw_joints_2d(frame_bgr, joints2d,
-                                   joint_color=(0, 255, 200), bone_color=(0, 180, 255))
-    return frame_bgr
+    return draw_joints_2d(frame_bgr, j2d,
+                          joint_color=(0, 255, 200), bone_color=(0, 180, 255))
 
 
 def overlay_joints_from_mhrd(frame_bgr, mhrd_output):
-    """Draw 2D joints from MHRD-Pose joints2d_smpl (already in full-image px)."""
-    if mhrd_output is None:
-        return frame_bgr
-    j2d = mhrd_output.get('joints2d_smpl')
+    """Draw MHRD-Pose joints via the shared extract_joints2d_mhrd path."""
+    j2d = extract_joints2d_mhrd(mhrd_output)
     if j2d is None:
-        # Fallback: project joints3d_smpl + pred_cam_t (Y-down OpenCV convention)
-        j3d  = mhrd_output.get('joints3d_smpl')
-        camt = mhrd_output.get('pred_cam_t')
-        if j3d is None or camt is None:
-            return frame_bgr
-        j3d  = _to_numpy(j3d)
-        camt = _to_numpy(camt)
-        if j3d.ndim == 2: j3d = j3d[np.newaxis]
-        if camt.ndim == 1: camt = camt[np.newaxis]
-        for b in range(len(j3d)):
-            xyz = j3d[b] + camt[b][None, :]
-            z = np.where(np.abs(xyz[:, 2]) < 0.05, 0.05, xyz[:, 2])
-            u = IMG_W / 2 + FOCAL_LENGTH * xyz[:, 0] / z
-            v = IMG_H / 2 + FOCAL_LENGTH * xyz[:, 1] / z
-            frame_bgr = draw_joints_2d(frame_bgr, np.stack([u, v], axis=1),
-                                       joint_color=(0, 255, 255), bone_color=(255, 128, 0))
-    else:
-        j2d_np = _to_numpy(j2d)
-        if j2d_np.ndim == 2:
-            j2d_np = j2d_np[np.newaxis]   # [1, 24, 2]
-        for b in range(len(j2d_np)):
-            frame_bgr = draw_joints_2d(frame_bgr, j2d_np[b],
-                                       joint_color=(0, 255, 255), bone_color=(255, 128, 0))
-    return frame_bgr
+        return frame_bgr
+    return draw_joints_2d(frame_bgr, j2d,
+                          joint_color=(0, 255, 255), bone_color=(255, 128, 0))
 
 
 # ── Per-frame diagnostics ─────────────────────────────────────────────────────
@@ -341,7 +308,12 @@ def print_frame_diag(fn, raw_dets, dpose_output, mhrd_output, frame_bgr):
         for i, det in enumerate(raw_dets):
             cx, cy, scale = det[0], det[1], det[2]
             score = det[4] if len(det) > 4 else '?'
-            print(f'  Det#{i}: center=({cx:.0f},{cy:.0f})  height={scale:.0f}px  score={score:.2f}')
+            try:
+                score = float(score)
+                score_s = f'{score:.2f}'
+            except (ValueError, TypeError):
+                score_s = str(score)
+            print(f'  Det#{i}: center=({cx:.0f},{cy:.0f})  height={scale:.0f}px  score={score_s}')
             print(f'         bbox: x=[{cx-scale/2:.0f},{cx+scale/2:.0f}]  y=[{cy-scale/2:.0f},{cy+scale/2:.0f}]  img=({w}x{h})')
     else:
         print('  No detections')
@@ -360,10 +332,10 @@ def print_frame_diag(fn, raw_dets, dpose_output, mhrd_output, frame_bgr):
 
     if dpose_j3d is not None:
         dpose_root = dpose_j3d[0]  # pelvis
-        print(f'  D-PoSE  pelvis_3d:  [{dpose_root[0]:+ .3f}, {dpose_root[1]:+ .3f}, {dpose_root[2]:+ .3f}] m (Y-up)')
+        print(f'  D-PoSE  pelvis_3d:  [{dpose_root[0]:+.3f}, {dpose_root[1]:+.3f}, {dpose_root[2]:+.3f}] m (Y-up)')
     if mhrd_j3d is not None:
         mhrd_root = mhrd_j3d[0]
-        print(f'  MHRD    pelvis_3d:  [{mhrd_root[0]:+ .3f}, {mhrd_root[1]:+ .3f}, {mhrd_root[2]:+ .3f}] m (Y-down-cam)')
+        print(f'  MHRD    pelvis_3d:  [{mhrd_root[0]:+.3f}, {mhrd_root[1]:+.3f}, {mhrd_root[2]:+.3f}] m (Y-down-cam)')
 
     if dpose_j3d is not None and mhrd_j3d is not None:
         root_diff = np.linalg.norm(dpose_root - mhrd_root)
@@ -592,7 +564,7 @@ def main(args):
     videoWidth, videoHeight, videoFramerate = IMG_W, IMG_H, 30
     cap = getCaptureDeviceFromPath(args.input, videoWidth, videoHeight, videoFramerate)
 
-    fallback_bgr = np.zeros((IMG_H, IMG_W, 3), dtype=np.uint8)
+
     frame_number = 0
 
     while True:
@@ -627,9 +599,9 @@ def main(args):
         frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
 
         if len(raw_dets) == 0:
-            display = np.concatenate(
-                [np.concatenate([frame_bgr, frame_bgr], axis=1)] * 2
-                if False else [frame_bgr, frame_bgr], axis=1)
+            # No persons — compose a display that matches the normal (1280×590) size
+            display = build_display(frame_bgr, frame_bgr, [], None, None,
+                                    frame_number=frame_number)
             cv2.imshow('D-PoSE vs MHRD-Pose', display)
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
