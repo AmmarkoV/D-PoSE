@@ -16,7 +16,7 @@ DATASET:
   CROP_FACTOR: 0.0
   BATCH_SIZE: 64
   NUM_WORKERS: 1
-  PIN_MEMORY: True
+  PIN_MEMORY: False
   SHUFFLE_TRAIN: True
   TRAIN_DS: 'all'
   VAL_DS: '3dpw-val-cam'

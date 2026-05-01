@@ -197,7 +197,11 @@ class DatasetHMR(OriginalDatasetHMR):
 
     def __setstate__(self, state):
         self.__dict__.update(state)
-        self.data = np.load(self._data_path, allow_pickle=True)
+        try:
+            self.data = np.load(self._data_path, allow_pickle=True)
+        except Exception as e:
+            logger.error(f"Failed to load dataset file {self._data_path}: {e}")
+            raise
 
     def _try_load_cache(self):
         # NEW METHOD — no original in train/dataset/dataset.py
