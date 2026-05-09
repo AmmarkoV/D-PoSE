@@ -36,7 +36,8 @@ class Tester:
         self.smplx_cam_head = SMPLXCamHead(img_res=self.model_cfg.DATASET.IMG_RES).to(self.device)
         self._load_pretrained_model()
         self.model.eval()
-        self.renderer = Renderer(focal_length=1468.6047, img_w=1280, img_h=720, faces=self.smplx_cam_head.smplx.faces, same_mesh_color=False)
+        # WEBCAM RESOLUTION — must match CAP_PROP_FRAME_WIDTH/HEIGHT in demo_webcam.py
+        self.renderer = Renderer(focal_length=1468.6047, img_w=1920, img_h=1080, faces=self.smplx_cam_head.smplx.faces, same_mesh_color=False)
 
     def _build_model(self):
         self.hparams = self.model_cfg
@@ -51,7 +52,7 @@ class Tester:
     def _load_pretrained_model(self):
         # ========= Load pretrained weights ========= #
         logger.info(f'Loading pretrained model from {self.args.ckpt}')
-        ckpt = torch.load(self.args.ckpt)['state_dict']
+        ckpt = torch.load(self.args.ckpt, weights_only=False)['state_dict']
         load_pretrained_model(self.model, ckpt, overwrite_shape_mismatch=True, remove_lightning=True)
         logger.info(f'Loaded pretrained weights from \"{self.args.ckpt}\"')
 

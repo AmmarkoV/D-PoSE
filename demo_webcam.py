@@ -79,11 +79,15 @@ def main(args):
                 output_format='dict',
                 yolo_img_size=416
             )
-            cap = cv2.VideoCapture(2)
+            cap = cv2.VideoCapture(0, cv2.CAP_V4L2)
+            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
+            cap.set(cv2.CAP_PROP_FPS, 13)
             cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-            cap.set(cv2.CAP_PROP_FPS,13)
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+            actual_w = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+            actual_h = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+            logger.info(f'Camera resolution: {int(actual_w)}x{int(actual_h)}')
             frameNumber = 0
             use_bbox_filter = False
             while True:
@@ -118,7 +122,7 @@ def main(args):
                     detection = mot.prepare_output_detections(detections)
                     if len(detection[0]) > 0:
 
-                        hmr_output=tester.run_on_single_image_tensor(frame, detection)
+                        hmr_output=tester.run_on_single_image_tensor(frame, detection, render=True)
                         '''
                         from matplotlib import pyplot as plt
                         def get_smpl_skeleton():
