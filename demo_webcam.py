@@ -46,6 +46,55 @@ def smooth_bbox_params(bbox_params, kernel_size=11, sigma=8):
 
     return torch.tensor(smoothed, dtype=torch.float32, device='cpu') 
 '''
+
+"""
+Check if a path exists
+"""
+def checkIfPathIsDirectory(filename):
+    if (filename is None):  
+       return False
+    return os.path.isdir(filename) 
+
+
+"""
+Easy way to switch inputs
+"""
+def getCaptureDeviceFromPath(videoFilePath,videoWidth,videoHeight,videoFramerate=30):
+  #------------------------------------------
+  if (videoFilePath=="esp"):
+     from espStream import ESP32CamStreamer
+     cap = ESP32CamStreamer()
+  if (videoFilePath=="screen"):
+     from screenStream import ScreenGrabber
+     cap =  ScreenGrabber(region=(0,0,videoWidth,videoHeight))
+  elif (videoFilePath=="webcam"):
+     cap = cv2.VideoCapture(0)
+     cap.set(cv2.CAP_PROP_FPS,videoFramerate)
+     cap.set(cv2.CAP_PROP_FRAME_WIDTH, videoWidth)
+     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, videoHeight)
+  elif (videoFilePath=="/dev/video0"):
+     cap = cv2.VideoCapture(0)
+     cap.set(cv2.CAP_PROP_FPS,videoFramerate)
+     cap.set(cv2.CAP_PROP_FRAME_WIDTH, videoWidth)
+     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, videoHeight)
+  elif (videoFilePath=="/dev/video1"):
+     cap = cv2.VideoCapture(1)
+     cap.set(cv2.CAP_PROP_FPS,videoFramerate)
+     cap.set(cv2.CAP_PROP_FRAME_WIDTH, videoWidth)
+     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, videoHeight)
+  elif (videoFilePath=="/dev/video2"):
+     cap = cv2.VideoCapture(2)
+     cap.set(cv2.CAP_PROP_FPS,videoFramerate)
+     cap.set(cv2.CAP_PROP_FRAME_WIDTH, videoWidth)
+     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, videoHeight)
+  else:
+     if (checkIfPathIsDirectory(videoFilePath) and (not "/dev/" in videoFilePath) ):
+        from folderStream import FolderStreamer
+        cap = FolderStreamer(path=videoFilePath,width=videoWidth,height=videoHeight)
+     else:
+        cap = cv2.VideoCapture(videoFilePath)
+  return cap 
+
 def main(args):
 
     input_image_folder = args.image_folder
@@ -79,7 +128,13 @@ def main(args):
                 output_format='dict',
                 yolo_img_size=416
             )
-            cap = cv2.VideoCapture(0, cv2.CAP_V4L2)
+
+
+            videoWidth     = 1280
+            videoHeight    = 720
+            videoFramerate = 30 
+            cap = getCaptureDeviceFromPath(args.input,videoWidth,videoHeight,videoFramerate)
+
             cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
@@ -227,6 +282,9 @@ if __name__ == '__main__':
 
     parser.add_argument('--cfg', type=str, default='configs/dpose_conf.yaml',
                         help='config file that defines model hyperparams')
+
+    parser.add_argument('--input', type=str, default='/dev/video0',
+                        help='From Device (path to files, videos , /dev/videoX or screen )')
 
     parser.add_argument('--ckpt', type=str, default='data/ckpt/paper_arxiv.ckpt',
                         help='checkpoint path')

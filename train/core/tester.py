@@ -37,7 +37,9 @@ class Tester:
         self._load_pretrained_model()
         self.model.eval()
         # WEBCAM RESOLUTION — must match CAP_PROP_FRAME_WIDTH/HEIGHT in demo_webcam.py
-        self.renderer = Renderer(focal_length=1468.6047, img_w=1920, img_h=1080, faces=self.smplx_cam_head.smplx.faces, same_mesh_color=False)
+        # focal_length = sqrt(w²+h²), same formula used in HMR.forward() — must stay in sync
+        _w, _h = 1920, 1080
+        self.renderer = Renderer(focal_length=(_w**2 + _h**2)**0.5, img_w=_w, img_h=_h, faces=self.smplx_cam_head.smplx.faces, same_mesh_color=False)
 
     def _build_model(self):
         self.hparams = self.model_cfg
