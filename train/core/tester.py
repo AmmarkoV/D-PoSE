@@ -24,7 +24,14 @@ class Tester:
 
         self.args = args
         self.model_cfg = update_hparams(args.cfg)
-        self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+        # honour --device when the caller provides it, otherwise pick whatever is available
+        requested = getattr(args, 'device', 'auto')
+        if (requested == 'cuda') and (not torch.cuda.is_available()):
+            logger.warning('CUDA requested but not available, falling back to CPU')
+            requested = 'cpu'
+        if (requested == 'auto'):
+            requested = 'cuda' if torch.cuda.is_available() else 'cpu'
+        self.device = torch.device(requested)
         self.normalize_img = Normalize(mean=constants.IMG_NORM_MEAN, std=constants.IMG_NORM_STD)
         self.bboxes_dict = {}
 
@@ -47,7 +54,7 @@ class Tester:
     def _load_pretrained_model(self):
         # ========= Load pretrained weights ========= #
         logger.info(f'Loading pretrained model from {self.args.ckpt}')
-        ckpt = torch.load(self.args.ckpt,weights_only=False)['state_dict']
+        ckpt = torch.load(self.args.ckpt, map_location=self.device, weights_only=False)['state_dict']
         load_pretrained_model(self.model, ckpt, overwrite_shape_mismatch=True, remove_lightning=True)
         logger.info(f'Loaded pretrained weights from \"{self.args.ckpt}\"')
 
@@ -109,11 +116,11 @@ class Tester:
                     norm_img = self.normalize_img(rgb_img)
                     inp_images[det_idx] = norm_img.float().to(self.device)
 
-                bbox_center = torch.tensor(bbox_center).cuda().float()
-                bbox_scale = torch.tensor(bbox_scale).cuda().float()
-                img_h = torch.tensor(orig_height).repeat(batch_size).cuda().float()
-                img_w = torch.tensor(orig_width).repeat(batch_size).cuda().float()
-                focal_length = ((img_w * img_w + img_h * img_h) ** 0.5).cuda().float()
+                bbox_center = torch.tensor(bbox_center).to(self.device).float()
+                bbox_scale = torch.tensor(bbox_scale).to(self.device).float()
+                img_h = torch.tensor(orig_height).repeat(batch_size).to(self.device).float()
+                img_w = torch.tensor(orig_width).repeat(batch_size).to(self.device).float()
+                focal_length = ((img_w * img_w + img_h * img_h) ** 0.5).to(self.device).float()
                 if not self.hparams.DATASET.USE_DEPTH:
                     hmr_output = self.model(inp_images, bbox_center=bbox_center, bbox_scale=bbox_scale, img_w=img_w, img_h=img_h)
                 else:
@@ -176,11 +183,11 @@ class Tester:
             norm_img = self.normalize_img(rgb_img)
             inp_images[det_idx] = norm_img.float().to(self.device)
 
-        bbox_center = torch.tensor(bbox_center).cuda().float()
-        bbox_scale  = torch.tensor(bbox_scale).cuda().float()
-        img_h = torch.tensor(orig_height).repeat(batch_size).cuda().float()
-        img_w = torch.tensor(orig_width).repeat(batch_size).cuda().float()
-        focal_length = ((img_w * img_w + img_h * img_h) ** 0.5).cuda().float()
+        bbox_center = torch.tensor(bbox_center).to(self.device).float()
+        bbox_scale  = torch.tensor(bbox_scale).to(self.device).float()
+        img_h = torch.tensor(orig_height).repeat(batch_size).to(self.device).float()
+        img_w = torch.tensor(orig_width).repeat(batch_size).to(self.device).float()
+        focal_length = ((img_w * img_w + img_h * img_h) ** 0.5).to(self.device).float()
             
         hmr_output,orig_depth,_,_,segmentation = self.model(inp_images, bbox_center=bbox_center, bbox_scale=bbox_scale, img_w=img_w, img_h=img_h)
         focal_length = (img_w * img_w + img_h * img_h) ** 0.5
@@ -349,11 +356,11 @@ class Tester:
                     norm_img = self.normalize_img(rgb_img)
                     inp_images[det_idx] = norm_img.float().to(self.device)
 
-                bbox_center = torch.tensor(bbox_center).cuda().float()
-                bbox_scale = torch.tensor(bbox_scale).cuda().float()
-                img_h = torch.tensor(orig_height).repeat(batch_size).cuda().float()
-                img_w = torch.tensor(orig_width).repeat(batch_size).cuda().float()
-                focal_length = ((img_w * img_w + img_h * img_h) ** 0.5).cuda().float()
+                bbox_center = torch.tensor(bbox_center).to(self.device).float()
+                bbox_scale = torch.tensor(bbox_scale).to(self.device).float()
+                img_h = torch.tensor(orig_height).repeat(batch_size).to(self.device).float()
+                img_w = torch.tensor(orig_width).repeat(batch_size).to(self.device).float()
+                focal_length = ((img_w * img_w + img_h * img_h) ** 0.5).to(self.device).float()
                 if self.hparams.DATASET.USE_DEPTH:
                     hmr_output,_,_,_ = self.model(inp_images, bbox_center=bbox_center, bbox_scale=bbox_scale, img_w=img_w, img_h=img_h)
                 else:
@@ -396,13 +403,13 @@ class Tester:
             rgb_img = crop(img, center, scale, [self.hparams.DATASET.IMG_RES, self.hparams.DATASET.IMG_RES])
 
             rgb_img = np.transpose(rgb_img.astype('float32'), (2, 0, 1)) / 255.0
-            rgb_img = torch.from_numpy(rgb_img).float().cuda()
+            rgb_img = torch.from_numpy(rgb_img).float().to(self.device)
             rgb_img = self.normalize_img(rgb_img)
 
-            img_h = torch.tensor(orig_height).repeat(1).cuda().float()
-            img_w = torch.tensor(orig_width).repeat(1).cuda().float()
-            center = torch.tensor(center).cuda().float()
-            scale = torch.tensor(scale).cuda().float()
+            img_h = torch.tensor(orig_height).repeat(1).to(self.device).float()
+            img_w = torch.tensor(orig_width).repeat(1).to(self.device).float()
+            center = torch.tensor(center).to(self.device).float()
+            scale = torch.tensor(scale).to(self.device).float()
             if not self.hparams.DATASET.USE_DEPTH:
                 hmr_output = self.model(rgb_img.unsqueeze(0), bbox_center=center.unsqueeze(0), bbox_scale=scale.unsqueeze(0), img_w=img_w, img_h=img_h)
             else:

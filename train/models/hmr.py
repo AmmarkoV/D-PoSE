@@ -61,6 +61,7 @@ class HMR(nn.Module):
             fl=None
     ):
         batch_size = images.shape[0]
+        device = images.device
 
         if fl is not None:
             # GT focal length
@@ -71,7 +72,7 @@ class HMR(nn.Module):
             focal_length = focal_length.repeat(2).view(batch_size, 2)
 
         # Initialze cam intrinsic matrix
-        cam_intrinsics = torch.eye(3).repeat(batch_size, 1, 1).cuda().float()
+        cam_intrinsics = torch.eye(3, device=device).repeat(batch_size, 1, 1).float()
         cam_intrinsics[:, 0, 0] = focal_length[:, 0]
         cam_intrinsics[:, 1, 1] = focal_length[:, 1]
         cam_intrinsics[:, 0, 2] = img_w/2.
@@ -83,10 +84,10 @@ class HMR(nn.Module):
             b = bbox_scale * 200
             bbox_info = torch.stack([cx - img_w / 2., cy - img_h / 2., b],
                                     dim=-1)
-            bbox_info = bbox_info.cuda().float()
+            bbox_info = bbox_info.to(device).float()
             bbox_info[:, :2] = bbox_info[:, :2] / cam_intrinsics[:, 0, 0].unsqueeze(-1)   # [-1, 1]
             bbox_info[:, 2] = bbox_info[:, 2] / cam_intrinsics[:, 0, 0]  # [-1, 1]
-            bbox_info = bbox_info.cuda().float()
+            bbox_info = bbox_info.to(device).float()
 
             if self.hparams.DATASET.USE_SEGM:
                 features,upsampled_feature= self.backbone(images)
@@ -128,9 +129,9 @@ class HMR(nn.Module):
                 t_shape = np.ones_like(hmr_output['pred_shape'][0].cpu()) * self.t
                 t_cam = np.ones_like(hmr_output['pred_cam'][0].cpu()) * self.t
                 #import ipdb; ipdb.set_trace()
-                hmr_output['pred_cam'] = torch.tensor(self.one_euro_cam(t_cam,hmr_output['pred_cam'].cpu().numpy())).cuda()
-                hmr_output['pred_pose'] = torch.tensor(self.one_euro_pose(t_pose,hmr_output['pred_pose'].cpu().numpy())).cuda()
-                hmr_output['pred_shape'] = torch.tensor(self.one_euro_shape(t_shape,hmr_output['pred_shape'].cpu().numpy())).cuda()
+                hmr_output['pred_cam'] = torch.tensor(self.one_euro_cam(t_cam,hmr_output['pred_cam'].cpu().numpy())).to(device)
+                hmr_output['pred_pose'] = torch.tensor(self.one_euro_pose(t_pose,hmr_output['pred_pose'].cpu().numpy())).to(device)
+                hmr_output['pred_shape'] = torch.tensor(self.one_euro_shape(t_shape,hmr_output['pred_shape'].cpu().numpy())).to(device)
             smpl_output = self.smpl(
                 rotmat=hmr_output['pred_pose'],
                 shape=hmr_output['pred_shape'],

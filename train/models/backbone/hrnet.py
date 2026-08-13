@@ -513,7 +513,7 @@ class PoseHighResolutionNet(nn.Module):
                     if name in ['bias']:
                         nn.init.constant_(m.bias, 0)
         if os.path.isfile(pretrained):
-            pretrained_state_dict = torch.load(pretrained)
+            pretrained_state_dict = torch.load(pretrained, map_location='cpu')
             logger.info('=> loading pretrained model {}'.format(pretrained))
 
             need_init_state_dict = {}

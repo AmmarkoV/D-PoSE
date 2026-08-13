@@ -1,6 +1,7 @@
 import os
 import sys
 import argparse
+import contextlib
 import torch
 import numpy as np
 import cv2
@@ -13,11 +14,22 @@ from multi_person_tracker import Sort
 #Dataloader
 from torch.utils.data import DataLoader
 #from train.core.tester_smpl import Tester
-os.environ['PYOPENGL_PLATFORM'] = 'egl'
+os.environ.setdefault('PYOPENGL_PLATFORM', 'egl')  # override with osmesa for software rendering
 #os.environ["DISPLAY"] = ":0"e
 sys.path.append('')
 
 from tools import saveCSVFileFromListOfDicts, saveCSVFileFromListOfDictsFollowingSkeletonOrder, get_azure_kinect_skeleton, get_smpl_skeleton, get_colors
+
+"""
+Resolve --device (auto/cpu/cuda) to an actual torch device
+"""
+def resolveDevice(requested):
+    if (requested == 'cuda') and (not torch.cuda.is_available()):
+        logger.warning('CUDA requested but not available, falling back to CPU')
+        requested = 'cpu'
+    if (requested == 'auto'):
+        requested = 'cuda' if torch.cuda.is_available() else 'cpu'
+    return torch.device(requested)
 
 """
 Check if a path exists
@@ -319,16 +331,20 @@ def main(args):
         beta=0.4,
     )
 
+    device = resolveDevice(args.device)
+    logger.info(f'Running on {device}')
+
     tester  = Tester(args)
     history = list()
 
     if True:
         all_image_folder = [input_image_folder]
-        device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
         torch.set_float32_matmul_precision('medium')
-        with torch.cuda.amp.autocast(), torch.no_grad():
+        # autocast only helps on CUDA, on CPU it hurts more than it helps
+        autocast = torch.cuda.amp.autocast() if device.type == 'cuda' else contextlib.nullcontext()
+        with autocast, torch.no_grad():
             mot = MPT(
-                device=torch.device('cuda'),
+                device=device,
                 batch_size=4,
                 display=False,
                 detector_type='yolo',
@@ -356,7 +372,7 @@ def main(args):
                     frame, scale, pad_x, pad_y = scale_and_embed_frame(frame)
 
                     input_tensor = torch.tensor(frame).permute(2, 0, 1).unsqueeze(0) / 255.0
-                    detection    = mot.detector(input_tensor.cuda())
+                    detection    = mot.detector(input_tensor.to(device))
 
                     # Concatenate boxes and scores from all predictions at once
                     if detection:
@@ -441,6 +457,9 @@ if __name__ == '__main__':
 
     parser.add_argument('--ckpt', type=str, default='data/ckpt/paper_arxiv.ckpt',
                         help='checkpoint path')
+
+    parser.add_argument('--device', type=str, default='auto', choices=['auto', 'cpu', 'cuda'],
+                        help='device to run inference on (auto picks cuda when available)')
 
     parser.add_argument('--image_folder', type=str, default='demo_images',
                         help='input image folder')

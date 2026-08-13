@@ -57,6 +57,11 @@ class Renderer(object):
         self.scene.remove_node(node)
         color_rgb = color_rgba[:, :, :3]
         mask = depth_map > 0
+
+        print("bg:", bg_img_rgb.shape)
+        print("color:", color_rgb.shape)
+        print("mask:", mask.shape, mask.dtype)
+
         bg_img_rgb[mask] = color_rgb[mask]
         return bg_img_rgb
 
