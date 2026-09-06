@@ -2,6 +2,7 @@ import os
 import sys
 import argparse
 import contextlib
+import time
 import torch
 import numpy as np
 import cv2
@@ -41,6 +42,11 @@ def checkIfPathIsDirectory(filename):
 
 """
 Easy way to switch inputs
+
+Returns (cap, isLiveDevice). isLiveDevice tells the caller whether cap is a real-time
+source (webcam/dev-node) as opposed to a video file or folder of images, so the main
+loop knows it's safe to drop stale frames on that source without skipping frames of
+a file that should be processed in full.
 """
 def getCaptureDeviceFromPath(videoFilePath,videoWidth,videoHeight,videoFramerate=30,useMjpg=False):
   #------------------------------------------
@@ -50,8 +56,14 @@ def getCaptureDeviceFromPath(videoFilePath,videoWidth,videoHeight,videoFramerate
      cap.set(cv2.CAP_PROP_FPS,videoFramerate)
      cap.set(cv2.CAP_PROP_FRAME_WIDTH, videoWidth)
      cap.set(cv2.CAP_PROP_FRAME_HEIGHT, videoHeight)
+     # Ask the backend to keep at most 1 frame queued, so a slow consumer gets the
+     # newest frame instead of working through an ever-growing backlog. Not every
+     # backend honors this, which is why the main loop also does its own grab()-based
+     # draining (see dropStaleFrames) as a synchronous, backend-independent fallback.
+     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
      return cap
   #------------------------------------------
+  isLiveDevice = videoFilePath in ("esp", "webcam", "/dev/video0", "/dev/video1", "/dev/video2")
   if (videoFilePath=="esp"):
      from espStream import ESP32CamStreamer
      cap = ESP32CamStreamer()
@@ -72,7 +84,24 @@ def getCaptureDeviceFromPath(videoFilePath,videoWidth,videoHeight,videoFramerate
         cap = FolderStreamer(path=videoFilePath,width=videoWidth,height=videoHeight)
      else:
         cap = cv2.VideoCapture(videoFilePath)
-  return cap
+  return cap, isLiveDevice
+
+
+"""
+Drop any frames that piled up on a live source while the previous iteration was busy
+processing, so cap.read() returns something close to real time instead of working
+through a backlog. cap.grab() only fetches a frame without decoding it, so it's cheap
+compared to cap.read()/retrieve(). Purely time-based and single-threaded: we estimate
+how many frame periods elapsed since the last read and grab (and discard) all but the
+last one of them.
+"""
+def dropStaleFrames(cap, secondsSinceLastRead, videoFramerate):
+    if (videoFramerate <= 0) or (secondsSinceLastRead is None):
+        return
+    framesBehind = int(secondsSinceLastRead * videoFramerate) - 1
+    for _ in range(max(0, framesBehind)):
+        if not cap.grab():
+            break
 
 
 
@@ -349,15 +378,20 @@ def main(args):
             )
             videoWidth, videoHeight = args.size
             videoFramerate = args.fps
-            cap = getCaptureDeviceFromPath(args.input,videoWidth,videoHeight,videoFramerate,useMjpg=args.mjpg)
+            cap, isLiveDevice = getCaptureDeviceFromPath(args.input,videoWidth,videoHeight,videoFramerate,useMjpg=args.mjpg)
 
             frameNumber = 0
             use_bbox_filter = False
+            lastReadTime = None
             while True:
                 frameNumber+=1
                 if True:#frameNumber%2==0:
                     try:
-                      ret, frame = cap.read()          
+                      if isLiveDevice:
+                          now = time.time()
+                          dropStaleFrames(cap, None if lastReadTime is None else now - lastReadTime, videoFramerate)
+                      ret, frame = cap.read()
+                      lastReadTime = time.time()
                       frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                     except Exception as e:
                       print("Error opening image",e)
