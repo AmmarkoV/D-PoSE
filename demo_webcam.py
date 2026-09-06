@@ -42,7 +42,15 @@ def checkIfPathIsDirectory(filename):
 """
 Easy way to switch inputs
 """
-def getCaptureDeviceFromPath(videoFilePath,videoWidth,videoHeight,videoFramerate=30):
+def getCaptureDeviceFromPath(videoFilePath,videoWidth,videoHeight,videoFramerate=30,useMjpg=False):
+  #------------------------------------------
+  def configureLiveCapture(cap):
+     if useMjpg:
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+     cap.set(cv2.CAP_PROP_FPS,videoFramerate)
+     cap.set(cv2.CAP_PROP_FRAME_WIDTH, videoWidth)
+     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, videoHeight)
+     return cap
   #------------------------------------------
   if (videoFilePath=="esp"):
      from espStream import ESP32CamStreamer
@@ -51,32 +59,20 @@ def getCaptureDeviceFromPath(videoFilePath,videoWidth,videoHeight,videoFramerate
      from screenStream import ScreenGrabber
      cap =  ScreenGrabber(region=(0,0,videoWidth,videoHeight))
   elif (videoFilePath=="webcam"):
-     cap = cv2.VideoCapture(0)
-     cap.set(cv2.CAP_PROP_FPS,videoFramerate)
-     cap.set(cv2.CAP_PROP_FRAME_WIDTH, videoWidth)
-     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, videoHeight)
+     cap = configureLiveCapture(cv2.VideoCapture(0))
   elif (videoFilePath=="/dev/video0"):
-     cap = cv2.VideoCapture(0)
-     cap.set(cv2.CAP_PROP_FPS,videoFramerate)
-     cap.set(cv2.CAP_PROP_FRAME_WIDTH, videoWidth)
-     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, videoHeight)
+     cap = configureLiveCapture(cv2.VideoCapture(0))
   elif (videoFilePath=="/dev/video1"):
-     cap = cv2.VideoCapture(1)
-     cap.set(cv2.CAP_PROP_FPS,videoFramerate)
-     cap.set(cv2.CAP_PROP_FRAME_WIDTH, videoWidth)
-     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, videoHeight)
+     cap = configureLiveCapture(cv2.VideoCapture(1))
   elif (videoFilePath=="/dev/video2"):
-     cap = cv2.VideoCapture(2)
-     cap.set(cv2.CAP_PROP_FPS,videoFramerate)
-     cap.set(cv2.CAP_PROP_FRAME_WIDTH, videoWidth)
-     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, videoHeight)
+     cap = configureLiveCapture(cv2.VideoCapture(2))
   else:
      if (checkIfPathIsDirectory(videoFilePath) and (not "/dev/" in videoFilePath) ):
         from folderStream import FolderStreamer
         cap = FolderStreamer(path=videoFilePath,width=videoWidth,height=videoHeight)
      else:
         cap = cv2.VideoCapture(videoFilePath)
-  return cap 
+  return cap
 
 
 
@@ -351,10 +347,9 @@ def main(args):
                 output_format='dict',
                 yolo_img_size=416
             )
-            videoWidth     = 1280
-            videoHeight    = 720
-            videoFramerate = 30 
-            cap = getCaptureDeviceFromPath(args.input,videoWidth,videoHeight,videoFramerate)
+            videoWidth, videoHeight = args.size
+            videoFramerate = args.fps
+            cap = getCaptureDeviceFromPath(args.input,videoWidth,videoHeight,videoFramerate,useMjpg=args.mjpg)
 
             frameNumber = 0
             use_bbox_filter = False
@@ -449,8 +444,20 @@ if __name__ == '__main__':
 
     parser.add_argument('--save', help='Save .json / visualization output', action=argparse.BooleanOptionalAction)
 
-    parser.add_argument('--input', type=str, default='/dev/video0',
+    parser.add_argument('--input', type=str, default='/dev/video0', dest='input',
                         help='From Device (path to files, videos , /dev/videoX or screen )')
+
+    parser.add_argument('--from', type=str, default='/dev/video0', dest='input',
+                        help='Alias for --input (path to files, videos, /dev/videoX or screen)')
+
+    parser.add_argument('--size', type=int, nargs=2, default=[1280, 720], metavar=('WIDTH', 'HEIGHT'),
+                        help='Webcam capture resolution (default: 1280 720)')
+
+    parser.add_argument('--fps', type=int, default=30,
+                        help='Webcam capture framerate (default: 30)')
+
+    parser.add_argument('--mjpg', action='store_true',
+                        help='Request MJPG streaming from the capture device (helps reach higher resolution/fps on USB webcams)')
 
     parser.add_argument('--cfg', type=str, default='configs/dpose_conf.yaml',
                         help='config file that defines model hyperparams')
