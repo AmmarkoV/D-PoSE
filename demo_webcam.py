@@ -90,17 +90,25 @@ def getCaptureDeviceFromPath(videoFilePath,videoWidth,videoHeight,videoFramerate
 """
 Drop any frames that piled up on a live source while the previous iteration was busy
 processing, so cap.read() returns something close to real time instead of working
-through a backlog. cap.grab() only fetches a frame without decoding it, so it's cheap
-compared to cap.read()/retrieve(). Purely time-based and single-threaded: we estimate
-how many frame periods elapsed since the last read and grab (and discard) all but the
-last one of them.
+through a backlog. cap.grab() only fetches a frame without decoding it, so discarding
+an already-buffered frame this way is cheap compared to cap.read()/retrieve() -- but
+grab() still blocks until the *next* frame exists if none is already buffered, so we
+can't just loop it a fixed number of times based on elapsed time: if the backend
+already caps its own buffer (e.g. CAP_PROP_BUFFERSIZE=1 got honored) there is no
+backlog to drain, and blindly calling grab() anyway would block waiting on frames
+that haven't happened yet, adding delay instead of removing it.
+
+Instead each grab() call is timed: a fast return means it discarded an
+already-buffered stale frame, so keep going; the moment a call takes real time, we've
+caught up to the live edge, so stop immediately and let the following cap.read() pick
+that fresh frame up normally.
 """
-def dropStaleFrames(cap, secondsSinceLastRead, videoFramerate):
-    if (videoFramerate <= 0) or (secondsSinceLastRead is None):
-        return
-    framesBehind = int(secondsSinceLastRead * videoFramerate) - 1
-    for _ in range(max(0, framesBehind)):
+def dropStaleFrames(cap, maxGrabSeconds=0.003):
+    while True:
+        startTime = time.time()
         if not cap.grab():
+            break
+        if (time.time() - startTime) > maxGrabSeconds:
             break
 
 
@@ -382,16 +390,13 @@ def main(args):
 
             frameNumber = 0
             use_bbox_filter = False
-            lastReadTime = None
             while True:
                 frameNumber+=1
                 if True:#frameNumber%2==0:
                     try:
                       if isLiveDevice:
-                          now = time.time()
-                          dropStaleFrames(cap, None if lastReadTime is None else now - lastReadTime, videoFramerate)
+                          dropStaleFrames(cap)
                       ret, frame = cap.read()
-                      lastReadTime = time.time()
                       frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                     except Exception as e:
                       print("Error opening image",e)
