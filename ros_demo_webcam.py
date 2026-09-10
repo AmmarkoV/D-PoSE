@@ -123,7 +123,10 @@ class PoseEstimationNode(Node):
         self.tf_broadcaster = tf2_ros.TransformBroadcaster(self)
         
         # Initialize tracking and filtering
-        self.tracker = Sort()
+        self.tracker = Sort(
+            max_age=args.track_max_missed_frames,
+            min_hits=args.track_min_detections_to_confirm,
+        )
         self.bbox_one_euro_filter = OneEuroFilter(
             np.zeros(4),
             np.zeros(4),
@@ -216,8 +219,22 @@ class PoseEstimationNode(Node):
                 display=False,
                 detector_type='yolo',
                 output_format='list',
-                yolo_img_size=256
+                # Frames are padded to a square and resized to this many pixels
+                # before detection. Smaller is faster but gives distant or
+                # partly occluded people fewer pixels to be detected in, so it
+                # trades detection recall for latency. The upstream defaults are
+                # 608 (multi_person_tracker) and 416 (offline demo.py); 256 is
+                # this node's real-time setting. See --yolo-img-size.
+                yolo_img_size=self.args.yolo_img_size,
             )
+
+            # The YOLOv3 wrapper applies its own confidence gate (hard-coded at
+            # 0.8) inside non-maximum suppression, before this node ever sees a
+            # box. Unless that gate is driven by the same value, lowering
+            # --detection-threshold below 0.8 has no effect at all. Set it here
+            # so the one flag controls both the detector's internal gate and the
+            # score filter applied in process_frame().
+            self.mot.detector.conf_thres = self.args.detection_threshold
             
             self.frame_number = 0
             self.get_logger().info('Person tracker initialized successfully!')
@@ -577,7 +594,25 @@ def parse_arguments():
     # Processing configuration
     parser.add_argument(
         '--detection-threshold', type=float, default=0.7,
-        help='Confidence threshold for person detection (0.0-1.0)'
+        help='Confidence a detection must reach to count as a person (0.0-1.0). '
+             'Drives both the detector internal gate and the final score filter. '
+             'Lower it to catch partly occluded people at the cost of false '
+             'detections; raise it for the opposite trade'
+    )
+    parser.add_argument(
+        '--track-max-missed-frames', type=int, default=1,
+        help='How many frames in a row a person may go undetected before their '
+             'track is dropped and their ID is lost (SORT max_age). This is a '
+             'frame count, not a person age. 1 means a single missed detection '
+             'loses the person; raise it to hold a worker through brief '
+             'occlusions by the car or the robot arm'
+    )
+    parser.add_argument(
+        '--track-min-detections-to-confirm', type=int, default=3,
+        help='How many frames in a row a person must be detected before their '
+             'skeleton is published (SORT min_hits). Raise it to suppress '
+             'flickering false detections, lower it to report someone entering '
+             'the cell sooner'
     )
     parser.add_argument(
         '--tracker-batch-size', type=int, default=1,
@@ -607,7 +642,10 @@ def parse_arguments():
     )
     parser.add_argument(
         '--yolo-img-size', type=int, default=256,
-        help='Input image size for YOLO detector'
+        help='Square input size, in pixels, that frames are resized to before '
+             'person detection. Larger sizes detect distant or small people '
+             'more reliably but cost latency (608 and 416 are the sizes used '
+             'upstream and by the offline demo; 256 is the real-time default)'
     )
     
     #Render 3d Mesh
