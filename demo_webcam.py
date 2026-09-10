@@ -2,6 +2,7 @@ import os
 import sys
 import argparse
 import contextlib
+import time
 import torch
 import numpy as np
 import cv2
@@ -41,9 +42,28 @@ def checkIfPathIsDirectory(filename):
 
 """
 Easy way to switch inputs
+
+Returns (cap, isLiveDevice). isLiveDevice tells the caller whether cap is a real-time
+source (webcam/dev-node) as opposed to a video file or folder of images, so the main
+loop knows it's safe to drop stale frames on that source without skipping frames of
+a file that should be processed in full.
 """
-def getCaptureDeviceFromPath(videoFilePath,videoWidth,videoHeight,videoFramerate=30):
+def getCaptureDeviceFromPath(videoFilePath,videoWidth,videoHeight,videoFramerate=30,useMjpg=False):
   #------------------------------------------
+  def configureLiveCapture(cap):
+     if useMjpg:
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+     cap.set(cv2.CAP_PROP_FPS,videoFramerate)
+     cap.set(cv2.CAP_PROP_FRAME_WIDTH, videoWidth)
+     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, videoHeight)
+     # Ask the backend to keep at most 1 frame queued, so a slow consumer gets the
+     # newest frame instead of working through an ever-growing backlog. Not every
+     # backend honors this, which is why the main loop also does its own grab()-based
+     # draining (see dropStaleFrames) as a synchronous, backend-independent fallback.
+     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+     return cap
+  #------------------------------------------
+  isLiveDevice = videoFilePath in ("esp", "webcam", "/dev/video0", "/dev/video1", "/dev/video2")
   if (videoFilePath=="esp"):
      from espStream import ESP32CamStreamer
      cap = ESP32CamStreamer()
@@ -51,32 +71,45 @@ def getCaptureDeviceFromPath(videoFilePath,videoWidth,videoHeight,videoFramerate
      from screenStream import ScreenGrabber
      cap =  ScreenGrabber(region=(0,0,videoWidth,videoHeight))
   elif (videoFilePath=="webcam"):
-     cap = cv2.VideoCapture(0)
-     cap.set(cv2.CAP_PROP_FPS,videoFramerate)
-     cap.set(cv2.CAP_PROP_FRAME_WIDTH, videoWidth)
-     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, videoHeight)
+     cap = configureLiveCapture(cv2.VideoCapture(0))
   elif (videoFilePath=="/dev/video0"):
-     cap = cv2.VideoCapture(0)
-     cap.set(cv2.CAP_PROP_FPS,videoFramerate)
-     cap.set(cv2.CAP_PROP_FRAME_WIDTH, videoWidth)
-     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, videoHeight)
+     cap = configureLiveCapture(cv2.VideoCapture(0))
   elif (videoFilePath=="/dev/video1"):
-     cap = cv2.VideoCapture(1)
-     cap.set(cv2.CAP_PROP_FPS,videoFramerate)
-     cap.set(cv2.CAP_PROP_FRAME_WIDTH, videoWidth)
-     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, videoHeight)
+     cap = configureLiveCapture(cv2.VideoCapture(1))
   elif (videoFilePath=="/dev/video2"):
-     cap = cv2.VideoCapture(2)
-     cap.set(cv2.CAP_PROP_FPS,videoFramerate)
-     cap.set(cv2.CAP_PROP_FRAME_WIDTH, videoWidth)
-     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, videoHeight)
+     cap = configureLiveCapture(cv2.VideoCapture(2))
   else:
      if (checkIfPathIsDirectory(videoFilePath) and (not "/dev/" in videoFilePath) ):
         from folderStream import FolderStreamer
         cap = FolderStreamer(path=videoFilePath,width=videoWidth,height=videoHeight)
      else:
         cap = cv2.VideoCapture(videoFilePath)
-  return cap 
+  return cap, isLiveDevice
+
+
+"""
+Drop any frames that piled up on a live source while the previous iteration was busy
+processing, so cap.read() returns something close to real time instead of working
+through a backlog. cap.grab() only fetches a frame without decoding it, so discarding
+an already-buffered frame this way is cheap compared to cap.read()/retrieve() -- but
+grab() still blocks until the *next* frame exists if none is already buffered, so we
+can't just loop it a fixed number of times based on elapsed time: if the backend
+already caps its own buffer (e.g. CAP_PROP_BUFFERSIZE=1 got honored) there is no
+backlog to drain, and blindly calling grab() anyway would block waiting on frames
+that haven't happened yet, adding delay instead of removing it.
+
+Instead each grab() call is timed: a fast return means it discarded an
+already-buffered stale frame, so keep going; the moment a call takes real time, we've
+caught up to the live edge, so stop immediately and let the following cap.read() pick
+that fresh frame up normally.
+"""
+def dropStaleFrames(cap, maxGrabSeconds=0.003):
+    while True:
+        startTime = time.time()
+        if not cap.grab():
+            break
+        if (time.time() - startTime) > maxGrabSeconds:
+            break
 
 
 
@@ -351,10 +384,9 @@ def main(args):
                 output_format='dict',
                 yolo_img_size=416
             )
-            videoWidth     = 1280
-            videoHeight    = 720
-            videoFramerate = 30 
-            cap = getCaptureDeviceFromPath(args.input,videoWidth,videoHeight,videoFramerate)
+            videoWidth, videoHeight = args.size
+            videoFramerate = args.fps
+            cap, isLiveDevice = getCaptureDeviceFromPath(args.input,videoWidth,videoHeight,videoFramerate,useMjpg=args.mjpg)
 
             frameNumber = 0
             use_bbox_filter = False
@@ -362,7 +394,9 @@ def main(args):
                 frameNumber+=1
                 if True:#frameNumber%2==0:
                     try:
-                      ret, frame = cap.read()          
+                      if isLiveDevice:
+                          dropStaleFrames(cap)
+                      ret, frame = cap.read()
                       frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                     except Exception as e:
                       print("Error opening image",e)
@@ -422,7 +456,7 @@ def main(args):
                         #save_matlab_visualization(hmr_output,output_filename="skeleton_%05u.png" % frameNumber)
                     else:
                         frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-                        cv2.imshow('front', frame)
+                        cv2.imshow('D-Pose', frame)
                         if (args.save):
                            saveFilename = 'colorFrame_0_%05d.jpg' % frameNumber
                            cv2.imwrite(saveFilename, frame)
@@ -449,8 +483,20 @@ if __name__ == '__main__':
 
     parser.add_argument('--save', help='Save .json / visualization output', action=argparse.BooleanOptionalAction)
 
-    parser.add_argument('--input', type=str, default='/dev/video0',
+    parser.add_argument('--input', type=str, default='/dev/video0', dest='input',
                         help='From Device (path to files, videos , /dev/videoX or screen )')
+
+    parser.add_argument('--from', type=str, default='/dev/video0', dest='input',
+                        help='Alias for --input (path to files, videos, /dev/videoX or screen)')
+
+    parser.add_argument('--size', type=int, nargs=2, default=[1280, 720], metavar=('WIDTH', 'HEIGHT'),
+                        help='Webcam capture resolution (default: 1280 720)')
+
+    parser.add_argument('--fps', type=int, default=30,
+                        help='Webcam capture framerate (default: 30)')
+
+    parser.add_argument('--mjpg', action='store_true',
+                        help='Request MJPG streaming from the capture device (helps reach higher resolution/fps on USB webcams)')
 
     parser.add_argument('--cfg', type=str, default='configs/dpose_conf.yaml',
                         help='config file that defines model hyperparams')

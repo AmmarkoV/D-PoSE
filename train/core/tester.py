@@ -198,7 +198,7 @@ class Tester:
         #                            same_mesh_color=False)
         front_view = self.renderer.render_front_view(np.array(pred_vertices_array),
                                                         bg_img_rgb=img.copy())
-        cv2.imshow('front', front_view[:, :, ::-1])
+        cv2.imshow('D-Pose', front_view[:, :, ::-1])
         #start = time.time()
         #side_view = renderer.render_side_view(pred_vertices_array)
         #end = time.time()
@@ -291,15 +291,15 @@ class Tester:
         #)
         if render:
             front_view = self.renderer.render_front_view(pred_vertices_array, bg_img_rgb=img.copy())
-            cv2.imshow('front', front_view[:, :, ::-1])
+            cv2.imshow('D-Pose', front_view[:, :, ::-1])
             if (save is not None):
                 cv2.imwrite(save, front_view[:, :, ::-1])
         else:
-            cv2.imshow('front', img[:, :, ::-1])
+            cv2.imshow('D-Pose', img[:, :, ::-1])
             if (save is not None):
                 cv2.imwrite(save, img[:, :, ::-1])
-            
-        #cv2.imshow('front', img[:, :, ::-1])
+
+        #cv2.imshow('D-Pose', img[:, :, ::-1])
         return hmr_output
         #side_view = self.renderer.render_side_view(pred_vertices_array)
         #cv2.imshow('side', side_view[:, :, ::-1])

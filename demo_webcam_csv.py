@@ -485,7 +485,7 @@ def main(args):
                         #save_matlab_visualization(hmr_output,output_filename="skeleton_%05u.png" % frameNumber)
                     else:
                         frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-                        cv2.imshow('front', frame)
+                        cv2.imshow('D-Pose', frame)
                         if (args.save):
                            saveFilename = 'colorFrame_0_%05d.jpg' % frameNumber
                            cv2.imwrite(saveFilename, frame)
