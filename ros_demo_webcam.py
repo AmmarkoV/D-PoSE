@@ -313,18 +313,30 @@ class PoseEstimationNode(Node):
         
         current_time = self.get_clock().now().to_msg()
         
+        marker_R = None
+        marker_t = None
+        if self.args.use_aruco:
+            if self.first_rvec is None or self.first_tvec is None:
+                self.get_logger().warning(
+                    'No ArUco marker pose yet, not publishing skeletons',
+                    throttle_duration_sec=2.0,
+                )
+                return
+            marker_R = cv2.Rodrigues(self.first_rvec)[0]
+            marker_t = self.first_tvec.reshape(3)
+        
         for i in range(len(track_bbs_ids)):
             human = Skeleton()
             human.id = int(track_bbs_ids[i][-1])
             human.joints = []
             
-            # Get joints for this person
-            joints = hmr_joints[i]
-            
-            # Apply camera translation to joints
-            joints[0, 0] += camera_translation[i, 0]
-            joints[0, 1] += camera_translation[i, 1]
-            joints[0, 2] += camera_translation[i, 2]
+            # Get joints for this person in the camera frame
+            # (OpenCV axes: x right, y down, z forward)
+            joints = hmr_joints[i] + camera_translation[i]
+
+            # Express joints w.r.t. the ArUco marker: p_marker = R^T (p_camera - t)
+            if marker_R is not None:
+                joints = (joints - marker_t) @ marker_R
 
             # Convert joints to ROS message format
             for j, joint in enumerate(joints):
@@ -386,7 +398,7 @@ class PoseEstimationNode(Node):
         """
         t = TransformStamped()
         t.header.stamp = timestamp
-        t.header.frame_id = 'Camera'
+        t.header.frame_id = 'Aruco_marker' if self.args.use_aruco else 'Camera'
         # t.child_frame_id = f'human_{human_id}_joint_{joint_id}'
         t.child_frame_id = f'human_{human_id}'
         
@@ -394,7 +406,7 @@ class PoseEstimationNode(Node):
         t.transform.translation.y = human.joints[0].y
         t.transform.translation.z = human.joints[0].z
         
-        pelvis = np.array([0.0,0.0,0.0])
+        pelvis = np.array([human.joints[0].x, human.joints[0].y, human.joints[0].z])
         left_hip = np.array([human.joints[1].x, human.joints[1].y, human.joints[1].z])
         right_hip = np.array([human.joints[2].x, human.joints[2].y, human.joints[2].z])
         neck = np.array([human.joints[12].x, human.joints[12].y, human.joints[12].z])
@@ -408,7 +420,7 @@ class PoseEstimationNode(Node):
         y_axis = np.cross(z_axis, x_axis)
         y_axis /= np.linalg.norm(y_axis)
 
-        x_axis = np.cross(z_axis, y_axis)
+        x_axis = np.cross(y_axis, z_axis)
         x_axis /= np.linalg.norm(x_axis)
 
         R = np.column_stack((x_axis, y_axis, z_axis))
@@ -435,17 +447,19 @@ class PoseEstimationNode(Node):
         # Publish base ArUco transform
         t = TransformStamped()
         t.header.stamp = timestamp
-        t.header.frame_id = 'wood_panel'
+        t.header.frame_id = self.args.aruco_parent_frame
         t.child_frame_id = 'Aruco_marker'
         
-        t.transform.translation.x = 0.1055
-        t.transform.translation.y = 1.405
-        t.transform.translation.z = -0.1025
+        t.transform.translation.x = self.args.aruco_xyz[0]
+        t.transform.translation.y = self.args.aruco_xyz[1]
+        t.transform.translation.z = self.args.aruco_xyz[2]
         
-        t.transform.rotation.x = 0.0
-        t.transform.rotation.y = -0.7071068
-        t.transform.rotation.z = -0.7071068
-        t.transform.rotation.w = 0.0
+        roll, pitch, yaw = (degrees_to_radians(a) for a in self.args.aruco_rpy)
+        q = tf_transformations.quaternion_from_euler(roll, pitch, yaw)
+        t.transform.rotation.x = q[0]
+        t.transform.rotation.y = q[1]
+        t.transform.rotation.z = q[2]
+        t.transform.rotation.w = q[3]
         
         self.tf_broadcaster.sendTransform(t)
         
@@ -650,6 +664,22 @@ def parse_arguments():
         '--aruco-marker-length', type=float, default=0.15,
         help='Printed ArUco marker side length in meters (black border edge to edge). '
              'Scales the estimated camera translation'
+    )
+    parser.add_argument(
+        '--aruco-parent-frame', type=str, default='wood_panel',
+        help='TF parent frame the ArUco marker is mounted on'
+    )
+    parser.add_argument(
+        '--aruco-xyz', type=float, nargs=3, default=[0.1055, 1.405, -0.1025],
+        metavar=('X', 'Y', 'Z'),
+        help='ArUco marker position in the parent frame, in meters'
+    )
+    parser.add_argument(
+        '--aruco-rpy', type=float, nargs=3, default=[90.0, 0.0, 180.0],
+        metavar=('ROLL', 'PITCH', 'YAW'),
+        help='ArUco marker orientation in the parent frame, in degrees '
+             '(fixed-axis roll about X, then pitch about Y, then yaw about Z). '
+             'Marker axes: X right, Y up along the printed marker, Z out of the marker'
     )
     
     # Camera intrinsics (used for ArUco pose estimation, at capture resolution)
