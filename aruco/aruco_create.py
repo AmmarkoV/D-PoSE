@@ -74,14 +74,13 @@ aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_6X6_250)
 parameters = cv2.aruco.DetectorParameters()
 detector = cv2.aruco.ArucoDetector(aruco_dict, parameters)
 
-def detect_aruco_from_image(frame, marker_id=None, fx=800.0, fy=800.0, cx=320.0, cy=240.0, dist_coeffs=None):
+def detect_aruco_from_image(frame, marker_id=None, fx=800.0, fy=800.0, cx=320.0, cy=240.0, dist_coeffs=None, marker_length=0.15):
     # marker_id: only use this marker for the pose (None = any marker, last detected wins)
+    # marker_length: marker real-world side length in meters
 
     rvec=None
 
     tvec=None
-    # Define marker real-world size in meters
-    marker_length = 0.15  # 5 cm
 
     camera_matrix = np.array([[fx, 0, cx],
                               [0, fy, cy],

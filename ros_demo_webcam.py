@@ -505,6 +505,7 @@ class PoseEstimationNode(Node):
                         fx=self.args.fx, fy=self.args.fy,
                         cx=self.args.cx, cy=self.args.cy,
                         dist_coeffs=self.args.dist_coeffs,
+                        marker_length=self.args.aruco_marker_length,
                     )
                     if rvec is not None and tvec is not None:
                         self.first_rvec, self.first_tvec = rvec, tvec
@@ -644,6 +645,11 @@ def parse_arguments():
         '--aruco-marker-id', type=int, default=None,
         help='Only use this ArUco marker ID (DICT_6X6_250) as the skeleton '
              'reference, e.g. 1. Other markers are ignored. Default: any marker'
+    )
+    parser.add_argument(
+        '--aruco-marker-length', type=float, default=0.15,
+        help='Printed ArUco marker side length in meters (black border edge to edge). '
+             'Scales the estimated camera translation'
     )
     
     # Camera intrinsics (used for ArUco pose estimation, at capture resolution)
