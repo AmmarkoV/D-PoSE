@@ -33,6 +33,7 @@ import rclpy
 from rclpy.node import Node
 from skeleton_msgs.msg import Skeletons, Skeleton, Joint3D
 from geometry_msgs.msg import TransformStamped
+from std_msgs.msg import Float64
 import tf2_ros
 import tf_transformations
 
@@ -42,6 +43,7 @@ from train.utils.one_euro_filter import OneEuroFilter
 from multi_person_tracker import MPT
 from multi_person_tracker import Sort
 from aruco.aruco_create import detect_aruco_from_image
+from aruco.marker_pose_table import MarkerPoseTable, install_exit_hooks
 
 # Set environment variables for OpenGL
 os.environ['PYOPENGL_PLATFORM'] = 'egl'
@@ -146,6 +148,7 @@ class PoseEstimationNode(Node):
         # ArUco detection state
         self.first_rvec = None
         self.first_tvec = None
+        self._initialize_marker_table()
         
         self.get_logger().info('D-PoSE Webcam Node initialized successfully!')
 
@@ -436,6 +439,38 @@ class PoseEstimationNode(Node):
         
         self.tf_broadcaster.sendTransform(t)
 
+    def _initialize_marker_table(self):
+        """Set up the averaged marker poses and the slider subscription."""
+        table_file = self.args.marker_table_file or os.path.join(
+            self.args.output_folder, 'aruco_marker_table.json')
+        self.marker_table = MarkerPoseTable(
+            static_camera=self.args.static_camera,
+            static_robot=self.args.static_robot,
+            bin_size=self.args.slider_bin,
+            min_samples=self.args.marker_min_samples,
+            spread_threshold=self.args.marker_spread_threshold,
+            recheck_interval=self.args.marker_recheck_interval,
+            alarm_pct=self.args.marker_alarm_pct,
+            line_fit=self.args.marker_line_fit,
+            fit_residual=self.args.marker_fit_residual,
+            table_file=table_file,
+            logger=self.get_logger(),
+        )
+
+        if not (self.args.use_aruco and self.args.static_camera):
+            return
+
+        install_exit_hooks(self.marker_table)
+        if self.args.static_robot:
+            self.get_logger().info('Static robot: averaging all marker observations '
+                                   'into a single slider position')
+        else:
+            self.slider_subscription = self.create_subscription(
+                Float64, self.args.slider_topic,
+                lambda msg: self.marker_table.set_slider(float(msg.data)), 10)
+            self.get_logger().info(
+                f'Averaging marker poses per slider position from {self.args.slider_topic}')
+
     # TODO: Move this to the robot side (so no fixed envirnoment components are present here)
     def publish_aruco_transforms(self, timestamp):
         """
@@ -513,18 +548,22 @@ class PoseEstimationNode(Node):
                 
                 # Detect ArUco markers (for camera calibration)
                 if self.args.use_aruco:
-                    rvec, tvec = detect_aruco_from_image(
-                        frame,
-                        marker_id=self.args.aruco_marker_id,
-                        fx=self.args.fx, fy=self.args.fy,
-                        cx=self.args.cx, cy=self.args.cy,
-                        dist_coeffs=self.args.dist_coeffs,
-                        marker_length=self.args.aruco_marker_length,
-                        # frame was already converted to RGB above
-                        input_is_bgr=False,
-                    )
-                    if rvec is not None and tvec is not None:
-                        self.first_rvec, self.first_tvec = rvec, tvec
+                    if self.marker_table.should_detect():
+                        rvec, tvec = detect_aruco_from_image(
+                            frame,
+                            marker_id=self.args.aruco_marker_id,
+                            fx=self.args.fx, fy=self.args.fy,
+                            cx=self.args.cx, cy=self.args.cy,
+                            dist_coeffs=self.args.dist_coeffs,
+                            marker_length=self.args.aruco_marker_length,
+                            # frame was already converted to RGB above
+                            input_is_bgr=False,
+                        )
+                        if rvec is not None and tvec is not None:
+                            self.marker_table.add(rvec, tvec)
+                    estimate = self.marker_table.estimate()
+                    if estimate is not None:
+                        self.first_rvec, self.first_tvec = estimate
                 
                 # Process frame for pose estimation
                 track_bbs_ids, hmr_output = self.process_frame(frame)
@@ -574,6 +613,8 @@ class PoseEstimationNode(Node):
         
         if hasattr(self, 'tester') and hasattr(self.tester, 'model'):
             del self.tester.model
+        
+        self.marker_table.save()
         
         logger.info('================= END =================')
         self.get_logger().info('Cleanup completed')
@@ -683,6 +724,66 @@ def parse_arguments():
         help='ArUco marker orientation in the parent frame, in degrees '
              '(fixed-axis roll about X, then pitch about Y, then yaw about Z). '
              'Marker axes: X right, Y up along the printed marker, Z out of the marker'
+    )
+    
+    parser.add_argument(
+        '--static-camera', action='store_true',
+        help='The camera never moves, so the marker pose only changes when the robot '
+             'does. Marker observations are then averaged per slider position, which '
+             'removes detection noise, survives occlusion and lets detection be skipped '
+             'once a position has converged'
+    )
+    parser.add_argument(
+        '--static-robot', action='store_true',
+        help='The robot never moves along its slider, so all observations belong to a '
+             'single position and the slider topic is not needed (implies a slider of 0)'
+    )
+    parser.add_argument(
+        '--slider-topic', type=str, default='/slider/position_y',
+        help='std_msgs/Float64 topic carrying the robot slider position in meters'
+    )
+    parser.add_argument(
+        '--slider-bin', type=float, default=0.01,
+        help='Slider positions this far apart (meters) share one averaged marker pose'
+    )
+    parser.add_argument(
+        '--marker-table-file', type=str, default='',
+        help='Where the averaged marker poses are saved on shutdown and reloaded from '
+             'on start. Default: <output-folder>/aruco_marker_table.json'
+    )
+    parser.add_argument(
+        '--marker-min-samples', type=int, default=30,
+        help='Observations a slider position needs before its averaged marker pose is '
+             'trusted enough to skip detection'
+    )
+    parser.add_argument(
+        '--marker-spread-threshold', type=float, default=0.01,
+        help='Maximum spread (standard deviation, meters) of the averaged marker '
+             'position for it to count as converged'
+    )
+    parser.add_argument(
+        '--marker-recheck-interval', type=float, default=5.0,
+        help='Once converged, how often (seconds) the marker is detected again to '
+             'catch a bumped camera'
+    )
+    parser.add_argument(
+        '--no-marker-line-fit', dest='marker_line_fit', action='store_false',
+        help='Do not fit a straight line through the learned slider positions. By '
+             'default the marker pose at a slider position that was never visited is '
+             'interpolated from that line, which never overrides a position that has '
+             'been measured directly'
+    )
+    parser.add_argument(
+        '--marker-fit-residual', type=float, default=0.02,
+        help='Largest residual (meters) the rail line fit may have before '
+             'interpolation is refused, e.g. because the slider is not metric or the '
+             'marker moved on its mount'
+    )
+    parser.add_argument(
+        '--marker-alarm-pct', type=float, default=5.0,
+        help='After loading poses from disk, warn while live observations disagree by '
+             'more than this percentage of the marker distance (possible tampering '
+             'while the node was down)'
     )
     
     # Camera intrinsics (used for ArUco pose estimation, at capture resolution)

@@ -55,6 +55,48 @@ python3 ros_demo_webcam.py --camera-id 1 --display --fps 30
 - `--aruco-marker-length`: Printed marker side length in meters (default: 0.15)
 - `--output-folder`: Directory for log files (default: ./logs)
 
+### Static Camera Averaging
+With a fixed camera the marker pose only changes when the robot moves along its slider, so
+observations at the same slider position can be averaged into one low-noise pose.
+
+- `--static-camera`: Average marker observations per slider position. Detection stops once a
+  position has converged (re-checked every few seconds), the averaged pose keeps publishing while
+  the marker is occluded, and returning to a known position reuses what was learned there
+- `--static-robot`: The robot never moves, so everything is averaged into a single position and no
+  slider topic is needed
+- `--slider-topic`: `std_msgs/Float64` topic with the slider position in meters (default: `/slider/position_y`)
+- `--slider-bin`: Slider positions within this distance share one averaged pose (default: 0.01 m)
+- `--marker-table-file`: Where learned poses are saved on shutdown and reloaded on start
+  (default: `<output-folder>/aruco_marker_table.json`)
+- `--marker-min-samples`: Observations needed before a position is trusted (default: 30)
+- `--marker-spread-threshold`: Required accuracy of the averaged position (default: 0.01 m)
+- `--marker-recheck-interval`: How often a converged position is re-detected (default: 5 s)
+- `--marker-alarm-pct`: After loading from disk, warn while live observations disagree by more than
+  this percentage of the marker distance (default: 5%). If most of them disagree, the stored pose is
+  discarded and relearned
+
+Learned positions are also fitted with a straight line (`marker pose = origin + slider x direction`),
+since travel is 1D and the marker rides the carriage rigidly. A slider position that was never visited
+is then interpolated from that line instead of being learned from scratch, and every observation
+improves every position. Measured positions always win over the line, and the fit is refused if its
+residual exceeds `--marker-fit-residual`, which covers a rail that is not straight in the camera's
+view or a slider value that is not in meters.
+
+- `--no-marker-line-fit`: Never interpolate, learn each slider position on its own
+- `--marker-fit-residual`: Largest residual the fit may have before interpolation is refused
+  (default: 0.02 m)
+
+Without a slider publisher the node warns and falls back to a single moving average, since it cannot
+tell whether the robot moved.
+
+```bash
+# Fixed camera, robot moving on its conveyor
+python3 ros_demo_webcam.py --static-camera
+
+# Fixed camera and robot parked
+python3 ros_demo_webcam.py --static-camera --static-robot
+```
+
 ## Getting Help
 
 ```bash
