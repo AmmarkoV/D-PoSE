@@ -499,7 +499,13 @@ class PoseEstimationNode(Node):
                 
                 # Detect ArUco markers (for camera calibration)
                 if self.args.use_aruco:
-                    rvec, tvec = detect_aruco_from_image(frame)
+                    rvec, tvec = detect_aruco_from_image(
+                        frame,
+                        marker_id=self.args.aruco_marker_id,
+                        fx=self.args.fx, fy=self.args.fy,
+                        cx=self.args.cx, cy=self.args.cy,
+                        dist_coeffs=self.args.dist_coeffs,
+                    )
                     if rvec is not None and tvec is not None:
                         self.first_rvec, self.first_tvec = rvec, tvec
                 
@@ -633,6 +639,23 @@ def parse_arguments():
     parser.add_argument(
         '--use-aruco', action='store_true',
         help='Enable ArUco marker detection for camera calibration'
+    )
+    parser.add_argument(
+        '--aruco-marker-id', type=int, default=None,
+        help='Only use this ArUco marker ID (DICT_6X6_250) as the skeleton '
+             'reference, e.g. 1. Other markers are ignored. Default: any marker'
+    )
+    
+    # Camera intrinsics (used for ArUco pose estimation, at capture resolution)
+    parser.add_argument('--fx', type=float, default=800.0, help='Camera focal length x in pixels')
+    parser.add_argument('--fy', type=float, default=800.0, help='Camera focal length y in pixels')
+    parser.add_argument('--cx', type=float, default=320.0, help='Camera principal point x in pixels')
+    parser.add_argument('--cy', type=float, default=240.0, help='Camera principal point y in pixels')
+    parser.add_argument(
+        '--dist-coeffs', type=float, nargs='+', default=None,
+        metavar='K',
+        help='Lens distortion coefficients in OpenCV order (k1 k2 p1 p2 [k3 ...]). '
+             'Default: no distortion'
     )
     
     # Detector configuration (for compatibility)

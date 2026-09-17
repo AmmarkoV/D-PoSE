@@ -74,7 +74,8 @@ aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_6X6_250)
 parameters = cv2.aruco.DetectorParameters()
 detector = cv2.aruco.ArucoDetector(aruco_dict, parameters)
 
-def detect_aruco_from_image(frame):
+def detect_aruco_from_image(frame, marker_id=None, fx=800.0, fy=800.0, cx=320.0, cy=240.0, dist_coeffs=None):
+    # marker_id: only use this marker for the pose (None = any marker, last detected wins)
 
     rvec=None
 
@@ -82,11 +83,13 @@ def detect_aruco_from_image(frame):
     # Define marker real-world size in meters
     marker_length = 0.15  # 5 cm
 
-    # Replace these with your actual calibration values
-    camera_matrix = np.array([[800, 0, 320],
-                              [0, 800, 240],
-                              [0,   0,   1]], dtype=np.float64)
-    dist_coeffs = np.zeros((5, 1))  # Assuming no lens distortion
+    camera_matrix = np.array([[fx, 0, cx],
+                              [0, fy, cy],
+                              [0,  0,  1]], dtype=np.float64)
+    if dist_coeffs is None:
+        dist_coeffs = np.zeros((5, 1))  # Assuming no lens distortion
+    else:
+        dist_coeffs = np.array(dist_coeffs, dtype=np.float64).reshape(-1, 1)
 
     # Load dictionary and detector
 
@@ -97,6 +100,9 @@ def detect_aruco_from_image(frame):
         cv2.aruco.drawDetectedMarkers(frame, corners, ids)
 
         for i, corner in enumerate(corners):
+            if marker_id is not None and ids[i][0] != marker_id:
+                continue
+
             # Estimate pose using solvePnP
             obj_points = np.array([
                 [-marker_length / 2,  marker_length / 2, 0],
@@ -106,9 +112,10 @@ def detect_aruco_from_image(frame):
             ], dtype=np.float32)
 
             img_points = corner[0].astype(np.float32)
-            success, rvec, tvec = cv2.solvePnP(obj_points, img_points, camera_matrix, dist_coeffs)
+            success, marker_rvec, marker_tvec = cv2.solvePnP(obj_points, img_points, camera_matrix, dist_coeffs)
 
             if success:
+                rvec, tvec = marker_rvec, marker_tvec
                 cv2.drawFrameAxes(frame, camera_matrix, dist_coeffs, rvec, tvec, marker_length * 0.5)
 
                 print(f"Marker ID: {ids[i][0]}")
