@@ -520,6 +520,8 @@ class PoseEstimationNode(Node):
                         cx=self.args.cx, cy=self.args.cy,
                         dist_coeffs=self.args.dist_coeffs,
                         marker_length=self.args.aruco_marker_length,
+                        # frame was already converted to RGB above
+                        input_is_bgr=False,
                     )
                     if rvec is not None and tvec is not None:
                         self.first_rvec, self.first_tvec = rvec, tvec
@@ -652,8 +654,9 @@ def parse_arguments():
     
     # ArUco marker options
     parser.add_argument(
-        '--use-aruco', action='store_true',
-        help='Enable ArUco marker detection for camera calibration'
+        '--use-aruco', action=argparse.BooleanOptionalAction, default=True,
+        help='Enable ArUco marker detection for camera calibration. Pass '
+             '--no-use-aruco to disable and publish in the raw camera frame'
     )
     parser.add_argument(
         '--aruco-marker-id', type=int, default=None,

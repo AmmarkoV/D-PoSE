@@ -14,8 +14,12 @@ python3 ros_demo_webcam.py --display
 # Use different camera resolution
 python3 ros_demo_webcam.py --width 1920 --height 1080
 
-# Enable ArUco marker detection for camera calibration
-python3 ros_demo_webcam.py --use-aruco
+# ArUco marker detection is on by default and is required for skeletons to
+# publish; disable it to publish in the raw camera frame
+python3 ros_demo_webcam.py --no-use-aruco
+
+# Restrict to a specific marker ID/size for camera calibration
+python3 ros_demo_webcam.py --aruco-marker-id 14 --aruco-marker-length 0.12
 
 # Use custom model configuration
 python3 ros_demo_webcam.py --cfg my_config.yaml --ckpt my_model.ckpt
@@ -24,7 +28,7 @@ python3 ros_demo_webcam.py --cfg my_config.yaml --ckpt my_model.ckpt
 python3 ros_demo_webcam.py --detection-threshold 0.5
 
 # Combine multiple options
-python3 ros_demo_webcam.py --camera-id 1 --display --use-aruco --fps 30
+python3 ros_demo_webcam.py --camera-id 1 --display --fps 30
 ```
 
 ## Command Line Options
@@ -45,7 +49,10 @@ python3 ros_demo_webcam.py --camera-id 1 --display --use-aruco --fps 30
 - `--detector`: Detector type - 'yolo' or 'maskrcnn' (default: maskrcnn)
 
 ### Additional Features
-- `--use-aruco`: Enable ArUco marker detection
+- `--use-aruco` / `--no-use-aruco`: Enable/disable ArUco marker detection (default: enabled). While
+  enabled, skeletons are published relative to the marker and only after it has been seen at least once
+- `--aruco-marker-id`: ArUco marker ID (DICT_6X6_250) to track (default: any marker)
+- `--aruco-marker-length`: Printed marker side length in meters (default: 0.15)
 - `--output-folder`: Directory for log files (default: ./logs)
 
 ## Getting Help

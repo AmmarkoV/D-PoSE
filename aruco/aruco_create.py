@@ -74,9 +74,13 @@ aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_6X6_250)
 parameters = cv2.aruco.DetectorParameters()
 detector = cv2.aruco.ArucoDetector(aruco_dict, parameters)
 
-def detect_aruco_from_image(frame, marker_id=None, fx=800.0, fy=800.0, cx=320.0, cy=240.0, dist_coeffs=None, marker_length=0.15):
+def detect_aruco_from_image(frame, marker_id=None, fx=800.0, fy=800.0, cx=320.0, cy=240.0, dist_coeffs=None, marker_length=0.15, input_is_bgr=True):
     # marker_id: only use this marker for the pose (None = any marker, last detected wins)
     # marker_length: marker real-world side length in meters
+    # input_is_bgr: set False when frame channels are already RGB (e.g. converted
+    #   upstream for the pose model), otherwise the grayscale conversion below
+    #   swaps the red/blue weighting and degrades corner localization, which
+    #   biases the solvePnP pose (rvec/tvec) used for the marker<->camera transform
 
     rvec=None
 
@@ -92,7 +96,7 @@ def detect_aruco_from_image(frame, marker_id=None, fx=800.0, fy=800.0, cx=320.0,
 
     # Load dictionary and detector
 
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY if input_is_bgr else cv2.COLOR_RGB2GRAY)
     corners, ids, rejected = detector.detectMarkers(gray)
 
     if ids is not None:
