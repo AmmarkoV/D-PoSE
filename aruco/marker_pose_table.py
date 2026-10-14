@@ -146,8 +146,17 @@ class MarkerPoseTable:
 
     # -- logging ----------------------------------------------------------
     def _log(self, level, msg):
-        if self.logger is not None:
-            getattr(self.logger, level)(msg)
+        # Each severity needs its own call site: the ROS logger keys its
+        # per-call-site state on the calling line and refuses to change the
+        # severity of a line it has already seen.
+        if self.logger is None:
+            return
+        if level == 'warning':
+            self.logger.warning(msg)
+        elif level == 'error':
+            self.logger.error(msg)
+        else:
+            self.logger.info(msg)
 
     # -- slider -----------------------------------------------------------
     def set_slider(self, value):

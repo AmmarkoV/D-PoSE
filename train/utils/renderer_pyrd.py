@@ -35,6 +35,17 @@ class Renderer(object):
 
     def render_front_view(self, verts, bg_img_rgb=None, bg_color=(0, 0, 0, 0)):
 
+        # Render at the size of the background image, otherwise the mask built
+        # from the depth map cannot index it.
+        if bg_img_rgb is not None:
+            img_h, img_w = bg_img_rgb.shape[:2]
+            if (img_w != self.renderer.viewport_width or
+                    img_h != self.renderer.viewport_height):
+                self.renderer.viewport_width = img_w
+                self.renderer.viewport_height = img_h
+                self.camera_center = [img_w // 2, img_h // 2]
+                self.camera.cx = self.camera_center[0]
+                self.camera.cy = self.camera_center[1]
 
         common_color = colorsys.hsv_to_rgb(0.6, 0.5, 1.0)
         mesh_list = []
