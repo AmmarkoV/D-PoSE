@@ -223,7 +223,8 @@ class Tester:
         #renderer.delete()
         
     @torch.no_grad()
-    def run_on_single_image_tensor(self, image_tensor, detections,render=True,save=None,fl=None):
+    def run_on_single_image_tensor(self, image_tensor, detections,render=True,save=None,fl=None,
+                                   display=True,display_scale=1.0):
         dets = detections
 
         # Load the image tensor and get its dimensions
@@ -303,14 +304,22 @@ class Tester:
         #    same_mesh_color=False
         #)
         if render:
-            front_view = self.renderer.render_front_view(pred_vertices_array, bg_img_rgb=img.copy())
-            cv2.imshow('D-Pose', front_view[:, :, ::-1])
-            if (save is not None):
-                cv2.imwrite(save, front_view[:, :, ::-1])
+            view = self.renderer.render_front_view(pred_vertices_array, bg_img_rgb=img.copy())
         else:
-            cv2.imshow('D-Pose', img[:, :, ::-1])
-            if (save is not None):
-                cv2.imwrite(save, img[:, :, ::-1])
+            view = img
+        view_bgr = view[:, :, ::-1]
+
+        # display=False keeps the call headless, for callers that only want the
+        # returned pose.  display_scale shrinks the window only; a saved file is
+        # always written at full resolution.
+        if display:
+            shown = view_bgr
+            if display_scale != 1.0:
+                shown = cv2.resize(view_bgr, None, fx=display_scale, fy=display_scale,
+                                   interpolation=cv2.INTER_AREA)
+            cv2.imshow('D-Pose', shown)
+        if (save is not None):
+            cv2.imwrite(save, view_bgr)
 
         #cv2.imshow('D-Pose', img[:, :, ::-1])
         return hmr_output
