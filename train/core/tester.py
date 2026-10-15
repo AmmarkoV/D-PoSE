@@ -223,7 +223,7 @@ class Tester:
         #renderer.delete()
         
     @torch.no_grad()
-    def run_on_single_image_tensor(self, image_tensor, detections,render=True,save=None):
+    def run_on_single_image_tensor(self, image_tensor, detections,render=True,save=None,fl=None):
         dets = detections
 
         # Load the image tensor and get its dimensions
@@ -270,13 +270,26 @@ class Tester:
         # Apply normalization to the entire batch at once
         inp_images = self.normalize_img(inp_images)
 
+        # Real camera intrinsics, when the caller knows them.  Without this the
+        # model falls back to estimating the focal length as the image diagonal
+        # (see hmr.py), which sets pred_cam_t -- and therefore the metric depth
+        # of every joint -- from a focal length that is not the camera's.
+        if fl is None:
+            fl_batch = None
+        else:
+            fx, fy = fl if isinstance(fl, (tuple, list)) else (fl, fl)
+            fl_batch = torch.tensor(
+                [[float(fx), float(fy)]], device=self.device, dtype=torch.float
+            ).repeat(batch_size, 1)
+
         # Pass the batch through the model
         hmr_output, orig_depth, _, _, segmentation = self.model(
             inp_images, 
             bbox_center=bbox_center, 
             bbox_scale=bbox_scale, 
             img_w=img_w, 
-            img_h=img_h
+            img_h=img_h,
+            fl=fl_batch
         )
 
         # Compute vertices array and render front view
