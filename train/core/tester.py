@@ -41,6 +41,12 @@ class Tester:
         self.model.eval()
         self.renderer = Renderer(focal_length=1468.6047, img_w=1280, img_h=720, faces=self.smplx_cam_head.smplx.faces, same_mesh_color=False)
 
+    def _imshow(self, window_name, image):
+        # Horizontal flip for display only (--mirror); saved images are untouched.
+        if getattr(self.args, 'mirror', False):
+            image = cv2.flip(image, 1)
+        cv2.imshow(window_name, image)
+
     def _build_model(self):
         self.hparams = self.model_cfg
         model = HMR(
@@ -198,7 +204,7 @@ class Tester:
         #                            same_mesh_color=False)
         front_view = self.renderer.render_front_view(np.array(pred_vertices_array),
                                                         bg_img_rgb=img.copy())
-        cv2.imshow('D-Pose', front_view[:, :, ::-1])
+        self._imshow('D-Pose', front_view[:, :, ::-1])
         #start = time.time()
         #side_view = renderer.render_side_view(pred_vertices_array)
         #end = time.time()
@@ -304,11 +310,11 @@ class Tester:
         #)
         if render:
             front_view = self.renderer.render_front_view(pred_vertices_array, bg_img_rgb=img.copy())
-            cv2.imshow('D-Pose', front_view[:, :, ::-1])
+            self._imshow('D-Pose', front_view[:, :, ::-1])
             if (save is not None):
                 cv2.imwrite(save, front_view[:, :, ::-1])
         else:
-            cv2.imshow('D-Pose', img[:, :, ::-1])
+            self._imshow('D-Pose', img[:, :, ::-1])
             if (save is not None):
                 cv2.imwrite(save, img[:, :, ::-1])
 
